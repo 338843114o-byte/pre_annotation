@@ -22,9 +22,11 @@ from add_handheld_product_min_rect import (  # noqa: E402
     cluster_boxes_by_aabb_overlap,
     collect_json_polygons,
     effective_rectangle_margin,
+    find_uncovered_json_products,
     flatten_product_units,
     format_rect_label,
     is_rect_label,
+    max_product_coverage_by_rects,
     polygons_intersect,
     viz_label_text,
     make_rectangle_shape,
@@ -119,7 +121,8 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(len(hands), 1)
         self.assertEqual(len(auxiliary), 1)
 
-    def test_yolo_match_and_json_fallback(self):
+    def test_yolo_primary_no_json_geometry(self):
+        """手持几何只用 YOLO；无手时纳入全部 YOLO，JSON 锚点不进单元。"""
         anchors = [box(10, 10, 30, 40), box(60, 10, 80, 40)]
         detections = [
             Detection(box(9, 9, 31, 41), 0.9, 0, "product"),
@@ -137,16 +140,13 @@ class CoreTests(unittest.TestCase):
             include_hand_matched=True,
         )
         self.assertEqual(selected, {0})
-        self.assertEqual(unmatched, 1)
-        self.assertEqual(len(units), 2)
-        geometry = flatten_product_units(units)
-        self.assertEqual(len(geometry), 3)
-        self.assertIn(anchors[0], geometry)
-        self.assertIn(anchors[1], geometry)
-        self.assertIn(detections[0].points, geometry)
+        self.assertEqual(unmatched, 1)  # 第二个 JSON 锚点无 YOLO 匹配，仅统计
+        self.assertEqual(len(units), 1)
+        self.assertEqual(units[0][0], detections[0].points)
+        self.assertNotIn(anchors[1], flatten_product_units(units))
 
     def test_hand_adds_unmatched_yolo_detection(self):
-        """无 JSON 商品锚点时，用手旁 YOLO 补商品。"""
+        """有手时只纳入与手重叠的 YOLO。"""
         near_hand = box(50, 55, 75, 90)
         detections = [Detection(box(40, 40, 60, 70), 0.8, 0, "product")]
         units, selected, unmatched = select_handheld_geometry(
@@ -167,17 +167,16 @@ class CoreTests(unittest.TestCase):
         self.assertIn(detections[0].points, geometry)
         self.assertNotIn(near_hand, geometry)
 
-    def test_json_plus_extra_hand_yolo(self):
-        """无 JSON 商品的手仍可用 YOLO 补漏标；已压住 JSON 商品的手不再补检。"""
-        anchor = box(10, 10, 40, 40)
-        matched = Detection(box(11, 11, 39, 39), 0.9, 0, "can")
-        extra_near_hand = Detection(box(55, 55, 80, 85), 0.85, 1, "bottle")
-        orphan_hand = box(50, 50, 90, 90)  # 不碰 JSON 商品
+    def test_hand_selects_overlapping_yolo_only(self):
+        """有手时：与手重叠的 YOLO 都可纳入（去重后）；远离手的 YOLO 丢弃。"""
+        hand = box(50, 50, 90, 90)
+        near = Detection(box(55, 55, 80, 85), 0.85, 1, "bottle")
+        far = Detection(box(5, 5, 20, 20), 0.99, 0, "can")
         units, selected, unmatched = select_handheld_geometry(
-            [anchor],
-            [orphan_hand],
             [],
-            [matched, extra_near_hand],
+            [hand],
+            [],
+            [far, near],
             width=100,
             height=100,
             min_iou=0.05,
@@ -186,37 +185,17 @@ class CoreTests(unittest.TestCase):
             include_hand_matched=True,
         )
         self.assertEqual(unmatched, 0)
-        self.assertEqual(selected, {0, 1})
-        self.assertEqual(len(units), 2)
-        geometry = flatten_product_units(units)
-        self.assertIn(extra_near_hand.points, geometry)
+        self.assertEqual(selected, {1})
+        self.assertEqual(len(units), 1)
+        self.assertEqual(units[0][0], near.points)
 
-        # 手已与 JSON 商品相交时，不再拉偏移 YOLO
-        touching_hand = box(30, 30, 70, 70)
-        bad_yolo = Detection(box(55, 55, 80, 85), 0.85, 1, "bottle")
-        units2, selected2, _ = select_handheld_geometry(
-            [anchor],
-            [touching_hand],
-            [],
-            [matched, bad_yolo],
-            width=100,
-            height=100,
-            min_iou=0.05,
-            min_overlap=0.2,
-            hand_expand_ratio=0.15,
-            include_hand_matched=True,
-        )
-        self.assertEqual(len(units2), 1)
-        self.assertNotIn(bad_yolo.points, flatten_product_units(units2))
-
-    def test_hand_matched_yolo_dedup_against_existing_unit(self):
-        """手旁补检若与已有 JSON/YOLO 单元重叠，不再新建商品单元。"""
-        anchor = box(10, 10, 50, 50)
+    def test_hand_matched_yolo_dedup_overlapping(self):
+        """手旁重叠 YOLO 多检只保留一个商品单元。"""
+        hand = box(20, 20, 60, 60)
         matched = Detection(box(11, 11, 49, 49), 0.9, 0, "occluded")
         duplicate = Detection(box(12, 12, 48, 48), 0.95, 1, "can")
-        hand = box(20, 20, 60, 60)
         units, selected, unmatched = select_handheld_geometry(
-            [anchor],
+            [],
             [hand],
             [],
             [matched, duplicate],
@@ -228,9 +207,10 @@ class CoreTests(unittest.TestCase):
             include_hand_matched=True,
         )
         self.assertEqual(unmatched, 0)
-        self.assertEqual(selected, {0, 1})  # 重复框也被吞掉
-        self.assertEqual(len(units), 1)  # 只有锚点单元，不另开
-        self.assertEqual(len(units[0]), 2)  # 锚点 + 一个匹配 YOLO
+        self.assertEqual(selected, {0, 1})
+        self.assertEqual(len(units), 1)
+        # 高分 duplicate 优先保留
+        self.assertEqual(units[0][0], duplicate.points)
 
     def test_hand_only_yolo_dedup_overlapping_detections(self):
         """手旁重叠 YOLO 多检只保留一个商品单元（避免 undefined_pack 双检成 _2）。"""
@@ -254,8 +234,8 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(len(units), 1)
         self.assertEqual(units[0][0], high.points)
 
-    def test_far_auxiliary_stays_separate_unit(self):
-        """远处严重遮挡不硬挂到左侧商品，应单独成单元以便分框。"""
+    def test_json_aux_not_used_as_generation_unit(self):
+        """JSON 辅助/锚点不参与生成单元（无 YOLO 则单元为空）。"""
         left = box(10, 10, 40, 40)
         far_aux = box(200, 200, 230, 220)
         units, selected, unmatched = select_handheld_geometry(
@@ -272,29 +252,10 @@ class CoreTests(unittest.TestCase):
         )
         self.assertEqual(unmatched, 1)
         self.assertEqual(selected, set())
-        self.assertEqual(len(units), 2)
-        self.assertEqual(units[0], [left])
-        self.assertEqual(units[1], [far_aux])
-
-        near_aux = box(35, 35, 55, 55)  # 与 left AABB 重叠
-        units2, _, _ = select_handheld_geometry(
-            [left],
-            [],
-            [near_aux],
-            [],
-            width=300,
-            height=300,
-            min_iou=0.05,
-            min_overlap=0.2,
-            hand_expand_ratio=0.15,
-            include_hand_matched=True,
-        )
-        self.assertEqual(len(units2), 1)
-        self.assertEqual(len(units2[0]), 2)
-        self.assertIn(near_aux, units2[0])
+        self.assertEqual(len(units), 0)
 
     def test_cluster_overlap_is_transitive(self):
-        """商品-商品重叠具有传递性；手不桥接商品，且须与商品直接重叠才纳入。"""
+        """商品-商品重叠具有传递性；手可桥接商品；手与手不可并类。"""
         product_a = box(10, 10, 40, 40)
         product_b = box(35, 10, 65, 40)  # 与 A 重叠
         product_c = box(60, 10, 90, 40)  # 与 B 重叠 → 应与 A 同簇
@@ -329,13 +290,32 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(len(clusters3), 1)
         self.assertEqual(len(clusters3[0]["hands"]), 1)
 
-        # 手桥接两个不相交商品 → 商品仍分两类，手可挂到两类
+        # 一只手桥接两个不相交商品 → 同一类
         left = box(10, 10, 30, 30)
         right = box(80, 10, 100, 30)
         bridge_hand = box(20, 5, 90, 25)  # 同时叠左右商品
         clusters4 = cluster_boxes_by_aabb_overlap([left, right], [bridge_hand])
-        self.assertEqual(len(clusters4), 2)
-        self.assertTrue(all(len(c["hands"]) == 1 for c in clusters4))
+        self.assertEqual(len(clusters4), 1)
+        self.assertEqual(len(clusters4[0]["products"]), 2)
+        self.assertEqual(len(clusters4[0]["hands"]), 1)
+
+        # 两只手各自碰一件商品、手与手重叠：因手↔手不合并，商品仍两类
+        left2 = box(10, 10, 30, 30)
+        right2 = box(80, 10, 100, 30)
+        hand_l = box(15, 20, 55, 50)
+        hand_r = box(45, 20, 95, 50)  # 与 hand_l AABB 重叠，但不碰 left2
+        # ensure hand_r overlaps right2 and hand_l overlaps left2
+        hand_l = box(10, 10, 40, 40)
+        hand_r = box(70, 10, 100, 40)
+        # make hands overlap each other
+        hand_l = box(20, 5, 60, 35)
+        hand_r = box(50, 5, 90, 35)
+        clusters5 = cluster_boxes_by_aabb_overlap(
+            [left2, right2], [hand_l, hand_r]
+        )
+        # hand_l overlaps left2; hand_r overlaps right2; hands overlap each other
+        # but hand-hand no union → still 2 clusters if products don't overlap
+        self.assertEqual(len(clusters5), 2)
 
     def test_hand_aabb_false_overlap_not_counted(self):
         """斜框 AABB 虚高相交、多边形不相交时，手不纳入。"""
@@ -356,12 +336,21 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(len(clusters), 1)
         self.assertEqual(clusters[0]["hands"], [])
 
-    def test_lonely_hand_dropped(self):
-        product = box(10, 10, 30, 30)
-        lonely_hand = box(80, 80, 100, 100)
-        clusters = cluster_boxes_by_aabb_overlap([product], [lonely_hand])
-        self.assertEqual(len(clusters), 1)
-        self.assertEqual(clusters[0]["hands"], [])
+    def test_json_coverage_ratio(self):
+        """JSON 物品相对外接矩形覆盖率：充分覆盖 / 未覆盖。"""
+        product = box(10, 10, 50, 50)
+        covering = box(8, 8, 52, 52)
+        partial = box(10, 10, 20, 20)
+        self.assertGreaterEqual(max_product_coverage_by_rects(product, [covering]), 0.9)
+        self.assertLess(max_product_coverage_by_rects(product, [partial]), 0.9)
+        uncovered = find_uncovered_json_products(
+            [product, box(100, 100, 120, 120)],
+            ["瓶装", "严重遮挡"],
+            [covering],
+            min_coverage=0.9,
+        )
+        self.assertEqual(len(uncovered), 1)
+        self.assertEqual(uncovered[0][0], "严重遮挡")
 
     def test_side_limit_compares_long_to_long_short_to_short(self):
         """矩形 OBB 较长边对原图较长边，较短边对原图较短边。"""
@@ -600,7 +589,6 @@ class CoreTests(unittest.TestCase):
         self.assertAlmostEqual(applied, 12.0)
 
     def test_reject_oversized_vending_machine_match(self):
-        anchors = [box(50, 50, 70, 80)]
         detections = [
             Detection(box(0, 0, 200, 120), 0.95, 1, "vending_machine"),
             Detection(box(48, 48, 72, 82), 0.90, 3, "can"),
@@ -613,8 +601,9 @@ class CoreTests(unittest.TestCase):
             ignore_class_names={"vending_machine", "phone"},
         )
         self.assertEqual([d.class_name for d in filtered], ["can"])
+        # 无手：全部 YOLO 商品进入单元
         units, selected, unmatched = select_handheld_geometry(
-            anchors,
+            [],
             [],
             [],
             filtered,
@@ -628,11 +617,11 @@ class CoreTests(unittest.TestCase):
         )
         self.assertEqual(selected, {0})
         self.assertEqual(unmatched, 0)
-        geometry = flatten_product_units(units)
-        self.assertIn(anchors[0], geometry)
-        self.assertIn(filtered[0].points, geometry)
+        self.assertEqual(len(units), 1)
+        self.assertEqual(units[0][0], filtered[0].points)
+        # 未过滤时 vending_machine 仍会被选入（过滤应在上游）
         units2, selected2, _ = select_handheld_geometry(
-            anchors,
+            [],
             [],
             [],
             detections,
@@ -644,9 +633,8 @@ class CoreTests(unittest.TestCase):
             include_hand_matched=True,
             max_area_ratio=8.0,
         )
-        self.assertEqual(selected2, {1})
-        geometry2 = flatten_product_units(units2)
-        self.assertNotIn(detections[0].points, geometry2)
+        # 两者不重叠，会成两个单元；高分 vending 与 can 都保留
+        self.assertEqual(len(units2), 2)
 
     def test_min_area_rectangle_contains_all_points(self):
         polygons = [box(10, 10, 30, 40), box(60, 25, 80, 55)]

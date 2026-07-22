@@ -336,6 +336,13 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(len(clusters), 1)
         self.assertEqual(clusters[0]["hands"], [])
 
+    def test_lonely_hand_dropped(self):
+        product = box(10, 10, 30, 30)
+        lonely_hand = box(80, 80, 100, 100)
+        clusters = cluster_boxes_by_aabb_overlap([product], [lonely_hand])
+        self.assertEqual(len(clusters), 1)
+        self.assertEqual(clusters[0]["hands"], [])
+
     def test_json_coverage_ratio(self):
         """JSON 物品相对外接矩形覆盖率：充分覆盖 / 未覆盖。"""
         product = box(10, 10, 50, 50)

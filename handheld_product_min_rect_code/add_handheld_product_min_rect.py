@@ -18,7 +18,8 @@
   用于补充 JSON 可能漏标的手拿商品；手旁多个高度重叠的 YOLO 框只保留一个，
   避免多检把商品数抬高。
 - 默认忽略 YOLO 中的售货柜/手机等非商品类别，并拒绝远大于锚点的检测框。
-- “严重遮挡/遮挡”等辅助区域会参与外接矩形计算，但不会被当成独立商品。
+- “严重遮挡/遮挡”等辅助区域仅在与某个商品单元空间重叠时挂到该单元；
+  与所有商品都不重叠时单独成单元，避免把远处遮挡硬并进另一侧商品框。
 """
 
 from __future__ import annotations
@@ -767,7 +768,8 @@ def select_handheld_geometry(
 
     每个单元对应一个手持商品：JSON 锚点（可附带匹配 YOLO 框），以及手旁、
     尚未被已有单元覆盖的 YOLO 框。手旁重叠多检只保留置信度更高的一个。
-    遮挡等辅助区域挂到最近的商品单元。手不在此并入，改由面积策略决定。
+    遮挡等辅助区域仅挂到与之 AABB 重叠的商品单元；无重叠则单独成单元，
+    避免远处遮挡被硬并到另一侧。手不在此并入，改由面积策略决定。
     """
     del include_nearby_hands, hand_near_expand_ratio, hand_max_center_dist_ratio
     product_units: List[ProductUnit] = []
@@ -868,24 +870,38 @@ def select_handheld_geometry(
             selected_detection_indices.add(index)
             product_units.append([detections[index].points])
 
-    if product_units and auxiliary:
+    if auxiliary:
         for aux in auxiliary:
-            aux_center = polygons_center([aux])
-            if aux_center is None:
+            aux_bounds = polygons_axis_aligned_bounds([aux])
+            if aux_bounds is None:
                 continue
-            best_unit = 0
-            best_dist = float("inf")
+            overlapping_units: List[int] = []
             for unit_index, unit in enumerate(product_units):
-                center = polygons_center(unit)
-                if center is None:
-                    continue
-                dist = float(
-                    np.hypot(aux_center[0] - center[0], aux_center[1] - center[1])
-                )
-                if dist < best_dist:
-                    best_dist = dist
-                    best_unit = unit_index
-            product_units[best_unit].append(list(aux))
+                unit_bounds = polygons_axis_aligned_bounds(unit)
+                if unit_bounds is not None and aabb_intersects(aux_bounds, unit_bounds):
+                    overlapping_units.append(unit_index)
+            if overlapping_units:
+                # 与多个商品重叠时挂到中心最近的一个
+                aux_center = polygons_center([aux])
+                best_unit = overlapping_units[0]
+                best_dist = float("inf")
+                if aux_center is not None:
+                    for unit_index in overlapping_units:
+                        center = polygons_center(product_units[unit_index])
+                        if center is None:
+                            continue
+                        dist = float(
+                            np.hypot(
+                                aux_center[0] - center[0], aux_center[1] - center[1]
+                            )
+                        )
+                        if dist < best_dist:
+                            best_dist = dist
+                            best_unit = unit_index
+                product_units[best_unit].append(list(aux))
+            else:
+                # 与任何商品都不重叠：单独成单元，可与附近手聚类成独立外接矩形
+                product_units.append([list(aux)])
 
     return product_units, selected_detection_indices, unmatched_anchor_count
 

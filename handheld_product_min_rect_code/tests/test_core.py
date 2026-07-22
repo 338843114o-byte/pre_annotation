@@ -204,6 +204,45 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(len(units), 1)
         self.assertEqual(units[0][0], high.points)
 
+    def test_far_auxiliary_stays_separate_unit(self):
+        """远处严重遮挡不硬挂到左侧商品，应单独成单元以便分框。"""
+        left = box(10, 10, 40, 40)
+        far_aux = box(200, 200, 230, 220)
+        units, selected, unmatched = select_handheld_geometry(
+            [left],
+            [],
+            [far_aux],
+            [],
+            width=300,
+            height=300,
+            min_iou=0.05,
+            min_overlap=0.2,
+            hand_expand_ratio=0.15,
+            include_hand_matched=True,
+        )
+        self.assertEqual(unmatched, 1)
+        self.assertEqual(selected, set())
+        self.assertEqual(len(units), 2)
+        self.assertEqual(units[0], [left])
+        self.assertEqual(units[1], [far_aux])
+
+        near_aux = box(35, 35, 55, 55)  # 与 left AABB 重叠
+        units2, _, _ = select_handheld_geometry(
+            [left],
+            [],
+            [near_aux],
+            [],
+            width=300,
+            height=300,
+            min_iou=0.05,
+            min_overlap=0.2,
+            hand_expand_ratio=0.15,
+            include_hand_matched=True,
+        )
+        self.assertEqual(len(units2), 1)
+        self.assertEqual(len(units2[0]), 2)
+        self.assertIn(near_aux, units2[0])
+
     def test_cluster_overlap_is_transitive(self):
         """商品-商品重叠具有传递性；手不桥接商品，且须与商品直接重叠才纳入。"""
         product_a = box(10, 10, 40, 40)

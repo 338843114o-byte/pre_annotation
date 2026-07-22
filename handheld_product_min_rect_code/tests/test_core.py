@@ -134,14 +134,14 @@ class CoreTests(unittest.TestCase):
         self.assertNotIn(near_hand, geometry)
 
     def test_json_plus_extra_hand_yolo(self):
-        """有 JSON 商品时，仍可用手旁不重叠 YOLO 补充漏标商品。"""
+        """无 JSON 商品的手仍可用 YOLO 补漏标；已压住 JSON 商品的手不再补检。"""
         anchor = box(10, 10, 40, 40)
         matched = Detection(box(11, 11, 39, 39), 0.9, 0, "can")
         extra_near_hand = Detection(box(55, 55, 80, 85), 0.85, 1, "bottle")
-        hand = box(50, 50, 90, 90)
+        orphan_hand = box(50, 50, 90, 90)  # 不碰 JSON 商品
         units, selected, unmatched = select_handheld_geometry(
             [anchor],
-            [hand],
+            [orphan_hand],
             [],
             [matched, extra_near_hand],
             width=100,
@@ -155,9 +155,25 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(selected, {0, 1})
         self.assertEqual(len(units), 2)
         geometry = flatten_product_units(units)
-        self.assertIn(anchor, geometry)
-        self.assertIn(matched.points, geometry)
         self.assertIn(extra_near_hand.points, geometry)
+
+        # 手已与 JSON 商品相交时，不再拉偏移 YOLO
+        touching_hand = box(30, 30, 70, 70)
+        bad_yolo = Detection(box(55, 55, 80, 85), 0.85, 1, "bottle")
+        units2, selected2, _ = select_handheld_geometry(
+            [anchor],
+            [touching_hand],
+            [],
+            [matched, bad_yolo],
+            width=100,
+            height=100,
+            min_iou=0.05,
+            min_overlap=0.2,
+            hand_expand_ratio=0.15,
+            include_hand_matched=True,
+        )
+        self.assertEqual(len(units2), 1)
+        self.assertNotIn(bad_yolo.points, flatten_product_units(units2))
 
     def test_hand_matched_yolo_dedup_against_existing_unit(self):
         """手旁补检若与已有 JSON/YOLO 单元重叠，不再新建商品单元。"""

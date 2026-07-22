@@ -14,9 +14,9 @@
 - JSON 中除“手/头/售货柜/遮挡类/最小外接矩形”外的已有 shape，视为手拿
   商品标注锚点；也可用 --product_labels 明确指定（建议包含「未定义包装」等）。
 - 每个 JSON 商品锚点可匹配一个 YOLO 框细化边界；漏检时仍保留 JSON 框。
-- JSON 有“手”时，额外纳入与手相交、且尚未被已有单元覆盖的 YOLO 商品框，
-  用于补充 JSON 可能漏标的手拿商品；手旁多个高度重叠的 YOLO 框只保留一个，
-  避免多检把商品数抬高。
+- JSON 有“手”时，仅对「尚未与任何 JSON 商品重叠的手」做 YOLO 补检，
+  用于补充漏标手拿商品；已有 JSON 商品的手不再拉 YOLO，避免错框抬高数量。
+  手旁多个高度重叠的 YOLO 框只保留一个。
 - 默认忽略 YOLO 中的售货柜/手机等非商品类别，并拒绝远大于锚点的检测框。
 - “严重遮挡/遮挡”等辅助区域仅在与某个商品单元空间重叠时挂到该单元；
   与所有商品都不重叠时单独成单元，避免把远处遮挡硬并进另一侧商品框。
@@ -831,11 +831,43 @@ def select_handheld_geometry(
                 return True
         return False
 
-    # 手旁 YOLO 补检：可补充 JSON 漏标；与已有单元或已保留手旁框重叠则去重。
+    # 手旁 YOLO 补检：只对「尚未压住任何已有商品」的手启用，避免已有 JSON
+    # 商品的手再拉进偏移/误检 YOLO；重叠多检去重。
     if include_hand_matched and hands:
+        orphan_hands: List[List[List[float]]] = []
+        for hand in hands:
+            hand_bounds = polygons_axis_aligned_bounds([hand])
+            touches_existing = False
+            if hand_bounds is not None:
+                for unit in product_units:
+                    # 优先真实多边形相交；AABB 相交时再确认，减少虚高
+                    if any(polygons_intersect(hand, poly) for poly in unit if poly):
+                        touches_existing = True
+                        break
+                    unit_bounds = polygons_axis_aligned_bounds(unit)
+                    if unit_bounds is not None and aabb_intersects(
+                        hand_bounds, unit_bounds
+                    ):
+                        # AABB 虚高时用扩展手再比一次 overlap，避免漏判
+                        if any(
+                            compare_polygons(
+                                hand,
+                                poly,
+                                min_iou=min_iou,
+                                min_overlap=min_overlap,
+                                max_area_ratio=max_area_ratio,
+                            ).matched
+                            for poly in unit
+                            if poly
+                        ):
+                            touches_existing = True
+                            break
+            if not touches_existing:
+                orphan_hands.append(hand)
+
         expanded_hands = [
             expanded_axis_aligned_polygon(hand, hand_expand_ratio, width, height)
-            for hand in hands
+            for hand in orphan_hands
         ]
         hand_candidates: List[int] = []
         for index, detection in enumerate(detections):

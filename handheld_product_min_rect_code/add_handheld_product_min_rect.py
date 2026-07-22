@@ -12,14 +12,14 @@
 
 默认识别逻辑（JSON 锚点 + YOLO 手旁补检，重叠去重）：
 - JSON 中除“手/头/售货柜/遮挡类/最小外接矩形”外的已有 shape，视为手拿
-  商品标注锚点；也可用 --product_labels 明确指定（建议包含「未定义包装」等）。
+  商品标注锚点；也可用 --product_labels 明确指定（建议包含「未定义包装」「严重遮挡」等）。
 - 每个 JSON 商品锚点可匹配一个 YOLO 框细化边界；漏检时仍保留 JSON 框。
 - JSON 有“手”时，仅对「尚未与任何 JSON 商品重叠的手」做 YOLO 补检，
   用于补充漏标手拿商品；已有 JSON 商品的手不再拉 YOLO，避免错框抬高数量。
   手旁多个高度重叠的 YOLO 框只保留一个。
 - 默认忽略 YOLO 中的售货柜/手机等非商品类别，并拒绝远大于锚点的检测框。
-- “严重遮挡/遮挡”等辅助区域仅在与某个商品单元空间重叠时挂到该单元；
-  与所有商品都不重叠时单独成单元，避免把远处遮挡硬并进另一侧商品框。
+- “遮挡”等辅助区域仅在与某个商品单元空间重叠时挂到该单元；
+  与所有商品都不重叠时单独成单元。
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ import numpy as np
 IMAGE_EXTS_DEFAULT = ".jpg,.jpeg,.png,.bmp,.webp"
 DEFAULT_IGNORE_LABELS = "手,头,售货柜,最小外接矩形"
 DEFAULT_HAND_LABELS = "手"
-DEFAULT_AUXILIARY_LABELS = "严重遮挡,遮挡"
+DEFAULT_AUXILIARY_LABELS = "遮挡"
 # for_skus.pt 等模型里这些类别不是手上商品，默认排除。
 DEFAULT_IGNORE_YOLO_CLASS_NAMES = (
     "vending_machine,phone,too_blurry,insufficient_info"
@@ -176,7 +176,7 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="",
         help=(
-            "JSON 中代表手拿商品的 label，逗号分隔，如 瓶装,罐装,袋装。"
+            "JSON 中代表手拿商品的 label，逗号分隔，如 瓶装,罐装,未定义包装,严重遮挡。"
             "支持前缀匹配：袋装_SKU名 也会被当成袋装。"
             "留空时自动使用排除非商品标签后的所有已有 shape。"
         ),
@@ -1004,6 +1004,9 @@ VIZ_LABEL_ALIASES: Dict[str, str] = {
     "盒装": "box",
     "桶装": "bucket",
     "条装": "stick",
+    "未定义包装": "undefined",
+    "严重遮挡": "occluded",
+    "遮挡": "occluded_soft",
     "手": "hand",
     "头": "head",
     "头部": "head",

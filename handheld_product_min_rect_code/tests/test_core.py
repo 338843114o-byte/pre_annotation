@@ -86,17 +86,18 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(len(auxiliary), 0)
 
     def test_collect_severe_occlusion_as_product(self):
-        """严重遮挡与未定义包装一样作为商品锚点，不再当辅助区域。"""
+        """严重遮挡/过于模糊与未定义包装一样作为商品锚点，不再当辅助区域。"""
         shapes = [
             {"label": "瓶装", "points": box(10, 10, 30, 50)},
             {"label": "未定义包装", "points": box(40, 10, 60, 50)},
             {"label": "严重遮挡", "points": box(80, 10, 100, 40)},
+            {"label": "过于模糊", "points": box(100, 50, 120, 80)},
             {"label": "遮挡", "points": box(5, 60, 15, 70)},
             {"label": "手", "points": box(20, 30, 70, 80)},
         ]
         anchors, hands, auxiliary = collect_json_polygons(
             shapes,
-            120,
+            140,
             100,
             product_labels={
                 "罐装",
@@ -107,13 +108,14 @@ class CoreTests(unittest.TestCase):
                 "条装",
                 "未定义包装",
                 "严重遮挡",
+                "过于模糊",
             },
             ignore_labels={"手", "头", "售货柜", "最小外接矩形"},
             hand_labels={"手"},
             auxiliary_labels={"遮挡"},
             rect_label="最小外接矩形",
         )
-        self.assertEqual(len(anchors), 3)
+        self.assertEqual(len(anchors), 4)
         self.assertEqual(len(hands), 1)
         self.assertEqual(len(auxiliary), 1)
 

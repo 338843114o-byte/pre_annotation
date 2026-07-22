@@ -12,7 +12,7 @@
 
 默认识别逻辑（JSON 锚点 + YOLO 手旁补检，重叠去重）：
 - JSON 中除“手/头/售货柜/遮挡类/最小外接矩形”外的已有 shape，视为手拿
-  商品标注锚点；也可用 --product_labels 明确指定（建议包含「未定义包装」「严重遮挡」等）。
+  商品标注锚点；也可用 --product_labels 明确指定（建议包含「未定义包装」「严重遮挡」「过于模糊」等）。
 - 每个 JSON 商品锚点可匹配一个 YOLO 框细化边界；漏检时仍保留 JSON 框。
 - JSON 有“手”时，仅对「尚未与任何 JSON 商品重叠的手」做 YOLO 补检，
   用于补充漏标手拿商品；已有 JSON 商品的手不再拉 YOLO，避免错框抬高数量。
@@ -176,7 +176,7 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="",
         help=(
-            "JSON 中代表手拿商品的 label，逗号分隔，如 瓶装,罐装,未定义包装,严重遮挡。"
+            "JSON 中代表手拿商品的 label，逗号分隔，如 瓶装,罐装,未定义包装,严重遮挡,过于模糊。"
             "支持前缀匹配：袋装_SKU名 也会被当成袋装。"
             "留空时自动使用排除非商品标签后的所有已有 shape。"
         ),
@@ -1006,6 +1006,7 @@ VIZ_LABEL_ALIASES: Dict[str, str] = {
     "条装": "stick",
     "未定义包装": "undefined",
     "严重遮挡": "occluded",
+    "过于模糊": "too_blurry",
     "遮挡": "occluded_soft",
     "手": "hand",
     "头": "head",

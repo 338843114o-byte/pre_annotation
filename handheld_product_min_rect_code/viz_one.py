@@ -22,6 +22,7 @@ VIZ_COLORS = {
     "stick": (0, 165, 255),
     "undefined": (0, 165, 255),
     "occluded": (0, 165, 255),
+    "too_blurry": (0, 165, 255),
     "occluded_soft": (0, 200, 200),
     "hand": (0, 255, 0),
     "cabinet": (160, 160, 160),

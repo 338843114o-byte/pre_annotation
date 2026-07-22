@@ -11,15 +11,16 @@
 4. 支持普通 YOLO 检测框和 YOLO OBB 旋转框。
 
 默认识别逻辑：
-- 手持物品几何以 YOLO 商品检测为准：有手时只保留与手重叠的 YOLO 框；无手时使用全部
-  YOLO 商品框。JSON 商品（瓶装/未定义包装/严重遮挡/过于模糊等）不参与生成几何，
-  仅用于事后覆盖校验。
-- 手 / 头 / 售货柜等非商品仍来自 JSON。
+- 手持物品几何以 YOLO 商品检测为准，不依赖“必须有手”：
+  · 若存在与手相交的 YOLO 框，优先只用这些框（远离手的货架框丢弃）；
+  · 若无手，或手与所有 YOLO 都不相交，则使用全部 YOLO 商品框。
+  JSON 商品（瓶装/未定义包装/严重遮挡/过于模糊等）不参与生成几何，仅用于事后覆盖校验。
+- 手与 YOLO 商品只需真实重叠/相交即可关联，不用面积比过滤；孤立手直接舍去。
 - 聚类：商品↔商品 AABB 重叠可传递合并；手↔商品真实相交则并入同一类（一只手可桥接
   多件不相交商品）；手↔手永不合并，也不能单独成类。
 - 每一类按 2.1 全框 → 2.2 去手 → 逐商品缩圈；含 12px 边距后 OBB 边长不超过原图
   对应边一半；贴边侧去掉边距。单品仍超限则取消大小限制。
-- 生成后检查每个 JSON 手持物品是否被某个最小外接矩形覆盖（交面积/物品面积≥0.9），
+- 生成后覆盖校验：交面积(JSON手持商品, 最小外接矩形) / JSON手持商品面积 ≥0.9，
   未覆盖则汇总上报。
 """
 
@@ -779,8 +780,11 @@ def select_handheld_geometry(
     """
     返回商品单元列表、选中的检测索引、未匹配 JSON 锚点数。
 
-    手持几何以 YOLO 为准：有手时只纳入与手重叠的 YOLO 框；无手时纳入全部 YOLO
-    商品框。重叠 YOLO 去重。JSON 锚点/辅助框不参与生成单元（仅统计未匹配锚点数）。
+    手持几何以 YOLO 为准，不强制要求有手：
+    - 若开启手关联且存在与手相交的 YOLO，优先只用这些框；
+    - 否则（无手，或手与全部 YOLO 都不相交）使用全部 YOLO 商品框。
+    手-商品只用真实相交判定，不受 max_area_ratio 限制。重叠 YOLO 去重。
+    JSON 锚点/辅助框不参与生成单元（仅统计未匹配锚点数）。
     """
     del include_nearby_hands, hand_near_expand_ratio, hand_max_center_dist_ratio, auxiliary
     product_units: List[ProductUnit] = []
@@ -820,24 +824,18 @@ def select_handheld_geometry(
 
     candidate_indices: List[int] = []
     if include_hand_matched and hands:
+        # 手与商品面积差常很大，只用真实相交（可对手略扩展）。
         expanded_hands = [
             expanded_axis_aligned_polygon(hand, hand_expand_ratio, width, height)
             for hand in hands
         ]
         for index, detection in enumerate(detections):
             for hand in expanded_hands:
-                match = compare_polygons(
-                    hand,
-                    detection.points,
-                    min_iou=min_iou,
-                    min_overlap=min_overlap,
-                    max_area_ratio=max_area_ratio,
-                )
-                if match.matched:
+                if polygons_intersect(hand, detection.points):
                     candidate_indices.append(index)
                     break
-    else:
-        # 无手：全部 YOLO 商品框参与聚类（由边长限制再缩圈/拆分）
+    if not candidate_indices:
+        # 无手，或手挂不上任何 YOLO：仍用全部 YOLO 生成最小外接矩形。
         candidate_indices = list(range(len(detections)))
 
     candidate_indices.sort(
@@ -1839,12 +1837,6 @@ def process_one(
         auxiliary_labels=auxiliary_labels,
         rect_label=args.rect_label,
     )
-    if not hands and not anchors:
-        raise ValueError(
-            "JSON 中既没有商品锚点，也没有手部标注；无法确定手拿区域。"
-            "请检查 --product_labels/--ignore_labels/--hand_labels。"
-        )
-
     predict_kwargs: Dict[str, Any] = {
         "source": str(image_path),
         "imgsz": args.imgsz,
@@ -1882,11 +1874,11 @@ def process_one(
     )
     del unmatched_anchor_count
     if args.require_yolo_match and not selected_indices:
-        raise ValueError("商品 YOLO 没有检测到与手部/场景匹配的框")
+        raise ValueError("商品 YOLO 没有检测到可用的商品框")
     if not product_units:
         raise ValueError(
-            "YOLO 未得到任何手拿商品范围（有手时需与手重叠的商品检测；"
-            "无手时需至少有一个商品检测）。JSON 商品不参与生成几何。"
+            "YOLO 未检出任何商品框，无法生成最小外接矩形。"
+            "JSON 商品不参与生成几何。"
         )
 
     sized_rects = build_sized_min_rectangles(

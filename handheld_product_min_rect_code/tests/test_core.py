@@ -146,7 +146,7 @@ class CoreTests(unittest.TestCase):
         self.assertNotIn(anchors[1], flatten_product_units(units))
 
     def test_hand_adds_unmatched_yolo_detection(self):
-        """有手时只纳入与手重叠的 YOLO。"""
+        """存在与手相交的 YOLO 时纳入该框。"""
         near_hand = box(50, 55, 75, 90)
         detections = [Detection(box(40, 40, 60, 70), 0.8, 0, "product")]
         units, selected, unmatched = select_handheld_geometry(
@@ -168,7 +168,7 @@ class CoreTests(unittest.TestCase):
         self.assertNotIn(near_hand, geometry)
 
     def test_hand_selects_overlapping_yolo_only(self):
-        """有手时：与手重叠的 YOLO 都可纳入（去重后）；远离手的 YOLO 丢弃。"""
+        """有与手相交的 YOLO 时：只用相交框，远离手的丢弃。"""
         hand = box(50, 50, 90, 90)
         near = Detection(box(55, 55, 80, 85), 0.85, 1, "bottle")
         far = Detection(box(5, 5, 20, 20), 0.99, 0, "can")
@@ -188,6 +188,47 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(selected, {1})
         self.assertEqual(len(units), 1)
         self.assertEqual(units[0][0], near.points)
+
+    def test_small_hand_large_product_still_selected(self):
+        """手远小于商品时仍按真实相交纳入，不受 max_area_ratio 限制。"""
+        hand = box(40, 40, 50, 50)
+        large = Detection(box(10, 10, 90, 90), 0.9, 0, "bucket")
+        units, selected, unmatched = select_handheld_geometry(
+            [],
+            [hand],
+            [],
+            [large],
+            width=100,
+            height=100,
+            min_iou=0.05,
+            min_overlap=0.2,
+            hand_expand_ratio=0.0,
+            include_hand_matched=True,
+            max_area_ratio=8.0,
+        )
+        self.assertEqual(selected, {0})
+        self.assertEqual(len(units), 1)
+
+    def test_hands_miss_all_yolo_fallback_all(self):
+        """有手但都不与 YOLO 相交时，回退用全部 YOLO（不强制有手）。"""
+        hand = box(80, 80, 95, 95)
+        far_a = Detection(box(5, 5, 25, 25), 0.9, 0, "can")
+        far_b = Detection(box(40, 40, 60, 60), 0.8, 1, "bottle")
+        units, selected, unmatched = select_handheld_geometry(
+            [],
+            [hand],
+            [],
+            [far_a, far_b],
+            width=100,
+            height=100,
+            min_iou=0.05,
+            min_overlap=0.2,
+            hand_expand_ratio=0.15,
+            include_hand_matched=True,
+        )
+        self.assertEqual(unmatched, 0)
+        self.assertEqual(selected, {0, 1})
+        self.assertEqual(len(units), 2)
 
     def test_hand_matched_yolo_dedup_overlapping(self):
         """手旁重叠 YOLO 多检只保留一个商品单元。"""

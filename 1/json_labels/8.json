@@ -1,0 +1,312 @@
+{
+  "version": "2.3.5",
+  "flags": {},
+  "shapes": [
+    {
+      "kie_linking": [],
+      "score": null,
+      "direction": 0,
+      "label": "售货柜",
+      "points": [
+        [
+          1072.0,
+          284.0
+        ],
+        [
+          1073.0,
+          0.0
+        ],
+        [
+          309.0,
+          0.0
+        ],
+        [
+          308.0,
+          281.0
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rotation",
+      "flags": {},
+      "attributes": {}
+    },
+    {
+      "kie_linking": [],
+      "score": null,
+      "direction": 0.4,
+      "label": "瓶装",
+      "points": [
+        [
+          513.3870967741935,
+          457.5806451612903
+        ],
+        [
+          492.3046606279162,
+          448.6671341241639
+        ],
+        [
+          496.272945696116,
+          439.2812573117514
+        ],
+        [
+          517.3553818423933,
+          448.19476834887774
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rotation",
+      "flags": {},
+      "attributes": {}
+    },
+    {
+      "kie_linking": [],
+      "score": null,
+      "direction": 0,
+      "label": "袋装",
+      "points": [
+        [
+          604.0967741935484,
+          362.0967741935484
+        ],
+        [
+          628.0967741935484,
+          404.0967741935484
+        ],
+        [
+          720.0967741935484,
+          351.0967741935484
+        ],
+        [
+          695.0967741935484,
+          309.0967741935484
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rotation",
+      "flags": {},
+      "attributes": {}
+    },
+    {
+      "kie_linking": [],
+      "score": null,
+      "direction": 0,
+      "label": "袋装",
+      "points": [
+        [
+          576.0,
+          402.0
+        ],
+        [
+          708.0,
+          425.0
+        ],
+        [
+          704.0,
+          449.0
+        ],
+        [
+          572.0,
+          426.0
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rotation",
+      "flags": {},
+      "attributes": {}
+    },
+    {
+      "kie_linking": [],
+      "score": null,
+      "direction": 0,
+      "label": "瓶装",
+      "points": [
+        [
+          534.2258064516129,
+          445.38709677419354
+        ],
+        [
+          552.2258064516129,
+          445.38709677419354
+        ],
+        [
+          552.2258064516129,
+          464.38709677419354
+        ],
+        [
+          534.2258064516129,
+          464.38709677419354
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rotation",
+      "flags": {},
+      "attributes": {}
+    },
+    {
+      "kie_linking": [],
+      "score": 0.823572,
+      "direction": 0,
+      "label": "手",
+      "points": [
+        [
+          640.739,
+          445.093
+        ],
+        [
+          684.773,
+          430.452
+        ],
+        [
+          666.233,
+          374.686
+        ],
+        [
+          622.198,
+          389.326
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rotation",
+      "flags": {},
+      "attributes": {}
+    },
+    {
+      "kie_linking": [],
+      "score": 0.40505,
+      "direction": 0,
+      "label": "手",
+      "points": [
+        [
+          650.616,
+          466.686
+        ],
+        [
+          691.854,
+          402.599
+        ],
+        [
+          617.164,
+          354.537
+        ],
+        [
+          575.925,
+          418.623
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rotation",
+      "flags": {},
+      "attributes": {}
+    },
+    {
+      "kie_linking": [],
+      "score": null,
+      "direction": 0.4000276273240837,
+      "label": "最小外接矩形_1",
+      "points": [
+        [
+          489.894,
+          423.555
+        ],
+        [
+          533.082,
+          441.816
+        ],
+        [
+          519.766,
+          473.307
+        ],
+        [
+          476.579,
+          455.046
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rotation",
+      "flags": {},
+      "attributes": {}
+    },
+    {
+      "kie_linking": [],
+      "score": null,
+      "direction": 1.043407121674489,
+      "label": "最小外接矩形_2",
+      "points": [
+        [
+          699.829,
+          292.454
+        ],
+        [
+          775.006,
+          421.532
+        ],
+        [
+          611.107,
+          516.99
+        ],
+        [
+          535.93,
+          387.912
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rotation",
+      "flags": {},
+      "attributes": {}
+    },
+    {
+      "kie_linking": [],
+      "score": null,
+      "direction": 0.0,
+      "label": "最小外接矩形_1",
+      "points": [
+        [
+          522.226,
+          433.387
+        ],
+        [
+          564.226,
+          433.387
+        ],
+        [
+          564.226,
+          476.387
+        ],
+        [
+          522.226,
+          476.387
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rotation",
+      "flags": {},
+      "attributes": {}
+    }
+  ],
+  "imagePath": "20250122_fe03a56718004f7492b153130e86d8a6-90ae01b5e659aaa27b0ecf27fa6ecf2e_main_879.jpg",
+  "imageData": null,
+  "imageHeight": 720,
+  "imageWidth": 1280,
+  "description": "",
+  "text": ""
+}

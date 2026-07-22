@@ -1,0 +1,282 @@
+{
+  "version": "2.3.5",
+  "flags": {},
+  "shapes": [
+    {
+      "kie_linking": [],
+      "score": null,
+      "direction": 0,
+      "label": "桶装",
+      "points": [
+        [
+          989.0,
+          283.0
+        ],
+        [
+          1195.0,
+          340.0
+        ],
+        [
+          1119.0,
+          613.0
+        ],
+        [
+          913.0,
+          556.0
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rotation",
+      "flags": {},
+      "attributes": {}
+    },
+    {
+      "kie_linking": [],
+      "score": null,
+      "direction": 0.20000000000000004,
+      "label": "桶装",
+      "points": [
+        [
+          837.1655763204031,
+          226.34046327831788
+        ],
+        [
+          990.3027816781512,
+          257.38291161408586
+        ],
+        [
+          958.5483870967741,
+          414.03225806451616
+        ],
+        [
+          805.4111817390262,
+          382.9898097287482
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rotation",
+      "flags": {},
+      "attributes": {}
+    },
+    {
+      "kie_linking": [],
+      "score": null,
+      "direction": 0,
+      "label": "桶装",
+      "points": [
+        [
+          1186.0,
+          333.0
+        ],
+        [
+          1235.0,
+          319.0
+        ],
+        [
+          1279.0,
+          477.0
+        ],
+        [
+          1229.0,
+          490.0
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rotation",
+      "flags": {},
+      "attributes": {}
+    },
+    {
+      "kie_linking": [],
+      "score": null,
+      "direction": 0,
+      "label": "售货柜",
+      "points": [
+        [
+          112.0,
+          1.0
+        ],
+        [
+          1071.0,
+          1.0
+        ],
+        [
+          1071.0,
+          349.0
+        ],
+        [
+          112.0,
+          349.0
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rotation",
+      "flags": {},
+      "attributes": {}
+    },
+    {
+      "kie_linking": [],
+      "score": 0.907632,
+      "direction": 0,
+      "label": "手",
+      "points": [
+        [
+          1097.224,
+          420.962
+        ],
+        [
+          976.054,
+          241.358
+        ],
+        [
+          739.27,
+          401.105
+        ],
+        [
+          860.44,
+          580.709
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rotation",
+      "flags": {},
+      "attributes": {}
+    },
+    {
+      "kie_linking": [],
+      "score": 0.417395,
+      "direction": 0,
+      "label": "手",
+      "points": [
+        [
+          1159.289,
+          466.216
+        ],
+        [
+          1266.527,
+          491.297
+        ],
+        [
+          1279,
+          250.446
+        ],
+        [
+          1215.619,
+          225.365
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rotation",
+      "flags": {},
+      "attributes": {}
+    },
+    {
+      "kie_linking": [],
+      "score": null,
+      "direction": 1.2975256058289915,
+      "label": "最小外接矩形_1",
+      "points": [
+        [
+          1183.265,
+          87.087
+        ],
+        [
+          1279.0,
+          428.653
+        ],
+        [
+          953.049,
+          719.0
+        ],
+        [
+          722.611,
+          397.869
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rotation",
+      "flags": {},
+      "attributes": {}
+    },
+    {
+      "kie_linking": [],
+      "score": null,
+      "direction": 0.9772834654657462,
+      "label": "最小外接矩形_1",
+      "points": [
+        [
+          946.934,
+          125.167
+        ],
+        [
+          1137.794,
+          408.067
+        ],
+        [
+          857.203,
+          597.368
+        ],
+        [
+          666.344,
+          314.468
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rotation",
+      "flags": {},
+      "attributes": {}
+    },
+    {
+      "kie_linking": [],
+      "score": null,
+      "direction": 0.030038135954948152,
+      "label": "最小外接矩形_1",
+      "points": [
+        [
+          1153.93,
+          211.75
+        ],
+        [
+          1279.0,
+          215.508
+        ],
+        [
+          1279.0,
+          505.65
+        ],
+        [
+          1146.354,
+          501.893
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rotation",
+      "flags": {},
+      "attributes": {}
+    }
+  ],
+  "imagePath": "0426_7039c35b05d3f14feadea154bee24b76-321600321701393589151_main_2675.jpg",
+  "imageData": null,
+  "imageHeight": 720,
+  "imageWidth": 1280,
+  "description": "",
+  "text": ""
+}

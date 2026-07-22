@@ -1,0 +1,21 @@
+# caches / bytecode
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# run logs (large, regenerable)
+**/logs/
+*.pid
+*.log
+
+# editor / OS
+.DS_Store
+*~
+*.swp
+
+# temp scripts
+_smoke*.py
+_rebuild*.py

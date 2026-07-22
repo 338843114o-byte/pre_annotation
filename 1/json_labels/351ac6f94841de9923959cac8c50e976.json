@@ -1,0 +1,161 @@
+{
+  "version": "2.5.4",
+  "flags": {},
+  "shapes": [
+    {
+      "kie_linking": [],
+      "label": "售货柜",
+      "score": null,
+      "points": [
+        [
+          285,
+          727
+        ],
+        [
+          1005,
+          727
+        ],
+        [
+          1005,
+          255
+        ],
+        [
+          285,
+          255
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "direction": 0,
+      "shape_type": "rotation",
+      "flags": {},
+      "attributes": {}
+    },
+    {
+      "kie_linking": [],
+      "label": "瓶装",
+      "score": null,
+      "points": [
+        [
+          791,
+          372
+        ],
+        [
+          832,
+          327
+        ],
+        [
+          681,
+          190
+        ],
+        [
+          641,
+          235
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "direction": 0,
+      "shape_type": "rotation",
+      "flags": {},
+      "attributes": {}
+    },
+    {
+      "kie_linking": [],
+      "label": "瓶装",
+      "score": null,
+      "points": [
+        [
+          852,
+          197
+        ],
+        [
+          877,
+          211
+        ],
+        [
+          860,
+          243
+        ],
+        [
+          835,
+          230
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "direction": 0,
+      "shape_type": "rotation",
+      "flags": {},
+      "attributes": {}
+    },
+    {
+      "kie_linking": [],
+      "label": "手",
+      "score": 0.864138,
+      "points": [
+        [
+          835.215,
+          230.675
+        ],
+        [
+          894.395,
+          260.88
+        ],
+        [
+          938.511,
+          174.445
+        ],
+        [
+          879.331,
+          144.24
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "direction": 0,
+      "shape_type": "rotation",
+      "flags": {},
+      "attributes": {}
+    },
+    {
+      "kie_linking": [],
+      "label": "手",
+      "score": 0.862893,
+      "points": [
+        [
+          731.084,
+          337.515
+        ],
+        [
+          775.243,
+          242.135
+        ],
+        [
+          615.004,
+          167.949
+        ],
+        [
+          570.846,
+          263.329
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "direction": 0,
+      "shape_type": "rotation",
+      "flags": {},
+      "attributes": {}
+    }
+  ],
+  "imagePath": "0503_pingzhuang_kangshifubinghongchaningmengkouwei_500ml_00385ef75d48eb166bdc28595a8c33ce-907d3724e1b446db909adde2125f0a73_main_296.jpg",
+  "imageData": null,
+  "imageHeight": 720,
+  "imageWidth": 1280,
+  "description": ""
+}

@@ -1,0 +1,221 @@
+{
+  "version": "3.3.1",
+  "flags": {},
+  "shapes": [
+    {
+      "kie_linking": [],
+      "direction": 0,
+      "label": "瓶装",
+      "score": null,
+      "points": [
+        [
+          805.0,
+          578.0
+        ],
+        [
+          934.0,
+          470.0
+        ],
+        [
+          970.0,
+          513.0
+        ],
+        [
+          841.0,
+          621.0
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rotation",
+      "flags": {},
+      "attributes": {}
+    },
+    {
+      "kie_linking": [],
+      "direction": 0,
+      "label": "瓶装",
+      "score": null,
+      "points": [
+        [
+          903.0,
+          415.0
+        ],
+        [
+          936.0,
+          443.0
+        ],
+        [
+          829.0,
+          571.0
+        ],
+        [
+          796.0,
+          543.0
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rotation",
+      "flags": {},
+      "attributes": {}
+    },
+    {
+      "kie_linking": [],
+      "direction": 0,
+      "label": "售货柜",
+      "score": null,
+      "points": [
+        [
+          112.0,
+          0.0
+        ],
+        [
+          1071.0,
+          0.0
+        ],
+        [
+          1071.0,
+          361.0
+        ],
+        [
+          112.0,
+          361.0
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rotation",
+      "flags": {},
+      "attributes": {}
+    },
+    {
+      "kie_linking": [],
+      "direction": 0,
+      "label": "手",
+      "score": 0.851533,
+      "points": [
+        [
+          810.4260967741935,
+          363.9250967741936
+        ],
+        [
+          866.4310967741935,
+          419.65009677419357
+        ],
+        [
+          963.1910967741935,
+          322.40509677419357
+        ],
+        [
+          907.1850967741935,
+          266.67909677419357
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rotation",
+      "flags": {},
+      "attributes": {}
+    },
+    {
+      "kie_linking": [],
+      "direction": 0.6108652381980153,
+      "label": "手",
+      "score": 0.285754,
+      "points": [
+        [
+          813.675189826357,
+          521.9393147198027
+        ],
+        [
+          915.8935268853702,
+          593.5133648717847
+        ],
+        [
+          973.7973263026751,
+          510.8181691511652
+        ],
+        [
+          871.578989243662,
+          439.2441189991834
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rotation",
+      "flags": {},
+      "attributes": {}
+    },
+    {
+      "label": "头部",
+      "score": null,
+      "points": [
+        [
+          393.2258064516129,
+          520.8870967741935
+        ],
+        [
+          819.8387096774194,
+          520.8870967741935
+        ],
+        [
+          819.8387096774194,
+          719.0
+        ],
+        [
+          393.2258064516129,
+          719.0
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rotation",
+      "flags": {},
+      "attributes": {},
+      "kie_linking": [],
+      "direction": 0
+    },
+    {
+      "kie_linking": [],
+      "direction": 0.629553212068723,
+      "label": "最小外接矩形_2",
+      "score": null,
+      "points": [
+        [
+          891.375,
+          391.686
+        ],
+        [
+          1013.145,
+          480.387
+        ],
+        [
+          879.484,
+          663.879
+        ],
+        [
+          757.714,
+          575.178
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rotation",
+      "flags": {},
+      "attributes": {}
+    }
+  ],
+  "imagePath": "0425_5d1ee35481434c238e258950ffc0cc60-01a7551832364101854ebd09b5ff8fac_sub_456.jpg",
+  "imageData": null,
+  "imageHeight": 720,
+  "imageWidth": 1280,
+  "description": ""
+}

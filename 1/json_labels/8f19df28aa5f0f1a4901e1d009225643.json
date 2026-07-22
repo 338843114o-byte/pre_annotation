@@ -1,0 +1,161 @@
+{
+  "version": "3.3.1",
+  "flags": {},
+  "shapes": [
+    {
+      "kie_linking": [],
+      "direction": 0,
+      "label": "售货柜",
+      "score": null,
+      "points": [
+        [
+          974.0,
+          346.0
+        ],
+        [
+          975.0,
+          0.0
+        ],
+        [
+          308.0,
+          0.0
+        ],
+        [
+          308.0,
+          346.0
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rotation",
+      "flags": {},
+      "attributes": {}
+    },
+    {
+      "kie_linking": [],
+      "direction": 0,
+      "label": "罐装",
+      "score": null,
+      "points": [
+        [
+          611.0,
+          622.0
+        ],
+        [
+          656.0,
+          585.0
+        ],
+        [
+          553.0,
+          462.0
+        ],
+        [
+          508.0,
+          500.0
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rotation",
+      "flags": {},
+      "attributes": {}
+    },
+    {
+      "kie_linking": [],
+      "direction": 0,
+      "label": "罐装",
+      "score": null,
+      "points": [
+        [
+          639.0,
+          580.0
+        ],
+        [
+          676.0,
+          556.0
+        ],
+        [
+          595.0,
+          435.0
+        ],
+        [
+          559.0,
+          459.0
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rotation",
+      "flags": {},
+      "attributes": {}
+    },
+    {
+      "kie_linking": [],
+      "direction": 0,
+      "label": "罐装",
+      "score": null,
+      "points": [
+        [
+          411.0,
+          187.0
+        ],
+        [
+          651.0,
+          351.0
+        ],
+        [
+          704.0,
+          274.0
+        ],
+        [
+          464.0,
+          109.0
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rotation",
+      "flags": {},
+      "attributes": {}
+    },
+    {
+      "kie_linking": [],
+      "direction": 0,
+      "label": "手",
+      "score": 0.850893,
+      "points": [
+        [
+          394.4514838709677,
+          367.6612903225806
+        ],
+        [
+          643.2258064516129,
+          367.6612903225806
+        ],
+        [
+          643.2258064516129,
+          56.965612903225804
+        ],
+        [
+          394.4514838709677,
+          56.965612903225804
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rotation",
+      "flags": {},
+      "attributes": {}
+    }
+  ],
+  "imagePath": "0522_xuejinlagepijiuguanzhuang500ml_ezsk9ulezwo3eqsz1pgww9g35d57dcvi_sub_287.jpg",
+  "imageData": null,
+  "imageHeight": 720,
+  "imageWidth": 1280,
+  "description": ""
+}

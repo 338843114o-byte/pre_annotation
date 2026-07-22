@@ -10,14 +10,13 @@
 3. 新 shape 沿用原 JSON 的字段结构；不写入模型路径、类别编号等额外元数据。
 4. 支持普通 YOLO 检测框和 YOLO OBB 旋转框。
 
-默认识别逻辑（始终以 JSON 标注为主）：
+默认识别逻辑（JSON 锚点 + YOLO 手旁补检，重叠去重）：
 - JSON 中除“手/头/售货柜/遮挡类/最小外接矩形”外的已有 shape，视为手拿
-  商品标注锚点；也可用 --product_labels 明确指定。商品数量与外接矩形单元
-  一律由这些 JSON 商品框决定。
-- YOLO 仅用于细化已有 JSON 商品锚点的边界；模型漏检、多检、误检都不改变
-  JSON 商品单元数量。
-- 仅当 JSON 没有任何商品锚点、但有“手”标注时，才回退用与手相交的 YOLO
-  商品框补商品（并对重叠检测去重），避免无标注可依。
+  商品标注锚点；也可用 --product_labels 明确指定（建议包含「未定义包装」等）。
+- 每个 JSON 商品锚点可匹配一个 YOLO 框细化边界；漏检时仍保留 JSON 框。
+- JSON 有“手”时，额外纳入与手相交、且尚未被已有单元覆盖的 YOLO 商品框，
+  用于补充 JSON 可能漏标的手拿商品；手旁多个高度重叠的 YOLO 框只保留一个，
+  避免多检把商品数抬高。
 - 默认忽略 YOLO 中的售货柜/手机等非商品类别，并拒绝远大于锚点的检测框。
 - “严重遮挡/遮挡”等辅助区域会参与外接矩形计算，但不会被当成独立商品。
 """
@@ -223,8 +222,8 @@ def parse_args() -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=True,
         help=(
-            "仅当 JSON 无商品锚点但有手部标注时，是否用与手相交的 YOLO 商品框回退补商品。"
-            "JSON 已有商品锚点时始终以 JSON 为准，不会因 YOLO 另开商品单元。"
+            "JSON 有手部标注时，是否补充与手相交的 YOLO 商品框；"
+            "与已有 JSON/YOLO 单元重叠的重复框会去重，不另开商品。"
         ),
     )
     parser.add_argument(
@@ -766,8 +765,8 @@ def select_handheld_geometry(
     """
     返回商品单元列表、选中的检测索引、未匹配锚点数。
 
-    以 JSON 商品锚点为主：每个锚点对应一个商品单元；YOLO 仅可匹配细化边界。
-    仅当没有任何 JSON 商品锚点时，才允许用手旁 YOLO 框回退生成商品单元（并去重）。
+    每个单元对应一个手持商品：JSON 锚点（可附带匹配 YOLO 框），以及手旁、
+    尚未被已有单元覆盖的 YOLO 框。手旁重叠多检只保留置信度更高的一个。
     遮挡等辅助区域挂到最近的商品单元。手不在此并入，改由面积策略决定。
     """
     del include_nearby_hands, hand_near_expand_ratio, hand_max_center_dist_ratio
@@ -830,21 +829,19 @@ def select_handheld_geometry(
                 return True
         return False
 
-    # JSON 已有商品锚点：只吸收与现有单元重叠的 YOLO（便于边界细化统计），不另开商品。
-    if anchors:
-        for index, detection in enumerate(detections):
-            if index in selected_detection_indices:
-                continue
-            if detection_covered_by_existing_units(detection.points):
-                selected_detection_indices.add(index)
-    # 无 JSON 商品锚点时，才用手旁 YOLO 回退；重叠检测去重，避免多检抬高商品数。
-    elif include_hand_matched and hands:
+    # 手旁 YOLO 补检：可补充 JSON 漏标；与已有单元或已保留手旁框重叠则去重。
+    if include_hand_matched and hands:
         expanded_hands = [
             expanded_axis_aligned_polygon(hand, hand_expand_ratio, width, height)
             for hand in hands
         ]
         hand_candidates: List[int] = []
         for index, detection in enumerate(detections):
+            if index in selected_detection_indices:
+                continue
+            if detection_covered_by_existing_units(detection.points):
+                selected_detection_indices.add(index)
+                continue
             for hand in expanded_hands:
                 match = compare_polygons(
                     hand,
@@ -862,6 +859,9 @@ def select_handheld_geometry(
         kept_hand_indices: List[int] = []
         for index in hand_candidates:
             if detection_overlaps_kept(detections[index].points, kept_hand_indices):
+                selected_detection_indices.add(index)
+                continue
+            if detection_covered_by_existing_units(detections[index].points):
                 selected_detection_indices.add(index)
                 continue
             kept_hand_indices.append(index)

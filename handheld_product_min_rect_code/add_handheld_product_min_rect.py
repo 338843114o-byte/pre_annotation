@@ -10,16 +10,15 @@
 3. 新 shape 沿用原 JSON 的字段结构；不写入模型路径、类别编号等额外元数据。
 4. 支持普通 YOLO 检测框和 YOLO OBB 旋转框。
 
-默认识别逻辑：
+默认识别逻辑（始终以 JSON 标注为主）：
 - JSON 中除“手/头/售货柜/遮挡类/最小外接矩形”外的已有 shape，视为手拿
-  商品标注锚点；也可用 --product_labels 明确指定。这些 JSON 商品框始终纳入
-  最终外接矩形，保证“以 JSON 商品标注为准”。
-- 每个商品锚点可额外匹配一个尺寸相近的 YOLO 商品框，用于细化边界；模型漏检
-  不影响 JSON 商品本身。
-- JSON 若含“手”标注，还会纳入与手相交/邻近、但没有匹配到商品锚点的 YOLO
-  商品框，用于补充 JSON 可能漏标的手拿商品。
-- 默认忽略 YOLO 中的售货柜/手机等非商品类别，并拒绝远大于锚点的检测框，
-  避免把整排货架框进最小外接矩形。
+  商品标注锚点；也可用 --product_labels 明确指定。商品数量与外接矩形单元
+  一律由这些 JSON 商品框决定。
+- YOLO 仅用于细化已有 JSON 商品锚点的边界；模型漏检、多检、误检都不改变
+  JSON 商品单元数量。
+- 仅当 JSON 没有任何商品锚点、但有“手”标注时，才回退用与手相交的 YOLO
+  商品框补商品（并对重叠检测去重），避免无标注可依。
+- 默认忽略 YOLO 中的售货柜/手机等非商品类别，并拒绝远大于锚点的检测框。
 - “严重遮挡/遮挡”等辅助区域会参与外接矩形计算，但不会被当成独立商品。
 """
 
@@ -223,7 +222,10 @@ def parse_args() -> argparse.Namespace:
         "--include_hand_matched_detections",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="JSON 有手部标注时，是否补充与手相交/邻近的 YOLO 商品框。",
+        help=(
+            "仅当 JSON 无商品锚点但有手部标注时，是否用与手相交的 YOLO 商品框回退补商品。"
+            "JSON 已有商品锚点时始终以 JSON 为准，不会因 YOLO 另开商品单元。"
+        ),
     )
     parser.add_argument(
         "--include_nearby_hands",
@@ -764,7 +766,8 @@ def select_handheld_geometry(
     """
     返回商品单元列表、选中的检测索引、未匹配锚点数。
 
-    每个单元对应一个手持商品：JSON 锚点（可附带匹配 YOLO 框），或仅手匹配到的 YOLO 框。
+    以 JSON 商品锚点为主：每个锚点对应一个商品单元；YOLO 仅可匹配细化边界。
+    仅当没有任何 JSON 商品锚点时，才允许用手旁 YOLO 框回退生成商品单元（并去重）。
     遮挡等辅助区域挂到最近的商品单元。手不在此并入，改由面积策略决定。
     """
     del include_nearby_hands, hand_near_expand_ratio, hand_max_center_dist_ratio
@@ -812,19 +815,36 @@ def select_handheld_geometry(
                     return True
         return False
 
-    hand_only_indices: Set[int] = set()
-    if include_hand_matched and hands:
+    def detection_overlaps_kept(
+        detection_points: Sequence[Sequence[float]], kept_indices: Sequence[int]
+    ) -> bool:
+        for kept in kept_indices:
+            match = compare_polygons(
+                detections[kept].points,
+                detection_points,
+                min_iou=min_iou,
+                min_overlap=min_overlap,
+                max_area_ratio=max_area_ratio,
+            )
+            if match.matched:
+                return True
+        return False
+
+    # JSON 已有商品锚点：只吸收与现有单元重叠的 YOLO（便于边界细化统计），不另开商品。
+    if anchors:
+        for index, detection in enumerate(detections):
+            if index in selected_detection_indices:
+                continue
+            if detection_covered_by_existing_units(detection.points):
+                selected_detection_indices.add(index)
+    # 无 JSON 商品锚点时，才用手旁 YOLO 回退；重叠检测去重，避免多检抬高商品数。
+    elif include_hand_matched and hands:
         expanded_hands = [
             expanded_axis_aligned_polygon(hand, hand_expand_ratio, width, height)
             for hand in hands
         ]
+        hand_candidates: List[int] = []
         for index, detection in enumerate(detections):
-            if index in selected_detection_indices:
-                continue
-            # 与 JSON/已匹配 YOLO 高度重叠的重复框：吞掉，不另开商品单元
-            if detection_covered_by_existing_units(detection.points):
-                selected_detection_indices.add(index)
-                continue
             for hand in expanded_hands:
                 match = compare_polygons(
                     hand,
@@ -834,12 +854,19 @@ def select_handheld_geometry(
                     max_area_ratio=max_area_ratio,
                 )
                 if match.matched:
-                    hand_only_indices.add(index)
-                    selected_detection_indices.add(index)
+                    hand_candidates.append(index)
                     break
-
-    for index in sorted(hand_only_indices):
-        product_units.append([detections[index].points])
+        hand_candidates.sort(
+            key=lambda idx: float(detections[idx].score), reverse=True
+        )
+        kept_hand_indices: List[int] = []
+        for index in hand_candidates:
+            if detection_overlaps_kept(detections[index].points, kept_hand_indices):
+                selected_detection_indices.add(index)
+                continue
+            kept_hand_indices.append(index)
+            selected_detection_indices.add(index)
+            product_units.append([detections[index].points])
 
     if product_units and auxiliary:
         for aux in auxiliary:

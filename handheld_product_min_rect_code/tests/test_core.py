@@ -112,6 +112,7 @@ class CoreTests(unittest.TestCase):
         self.assertIn(detections[0].points, geometry)
 
     def test_hand_adds_unmatched_yolo_detection(self):
+        """无 JSON 商品锚点时，才允许用手旁 YOLO 回退补商品。"""
         near_hand = box(50, 55, 75, 90)
         detections = [Detection(box(40, 40, 60, 70), 0.8, 0, "product")]
         units, selected, unmatched = select_handheld_geometry(
@@ -132,8 +133,34 @@ class CoreTests(unittest.TestCase):
         self.assertIn(detections[0].points, geometry)
         self.assertNotIn(near_hand, geometry)
 
+    def test_json_anchors_ignore_extra_hand_yolo(self):
+        """有 JSON 商品时，不以手旁额外 YOLO 新建商品单元（始终以 JSON 为准）。"""
+        anchor = box(10, 10, 40, 40)
+        matched = Detection(box(11, 11, 39, 39), 0.9, 0, "can")
+        extra_near_hand = Detection(box(55, 55, 80, 85), 0.85, 1, "bottle")
+        hand = box(50, 50, 90, 90)
+        units, selected, unmatched = select_handheld_geometry(
+            [anchor],
+            [hand],
+            [],
+            [matched, extra_near_hand],
+            width=100,
+            height=100,
+            min_iou=0.05,
+            min_overlap=0.2,
+            hand_expand_ratio=0.15,
+            include_hand_matched=True,
+        )
+        self.assertEqual(unmatched, 0)
+        self.assertEqual(selected, {0})  # 额外 YOLO 不计入商品
+        self.assertEqual(len(units), 1)
+        geometry = flatten_product_units(units)
+        self.assertIn(anchor, geometry)
+        self.assertIn(matched.points, geometry)
+        self.assertNotIn(extra_near_hand.points, geometry)
+
     def test_hand_matched_yolo_dedup_against_existing_unit(self):
-        """手旁补检若与已有 JSON/YOLO 单元重叠，不再新建商品单元。"""
+        """有 JSON 锚点时，重叠 YOLO 只细化边界，不另开商品单元。"""
         anchor = box(10, 10, 50, 50)
         matched = Detection(box(11, 11, 49, 49), 0.9, 0, "occluded")
         duplicate = Detection(box(12, 12, 48, 48), 0.95, 1, "can")
@@ -154,6 +181,28 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(selected, {0, 1})  # 重复框也被吞掉
         self.assertEqual(len(units), 1)  # 只有锚点单元，不另开
         self.assertEqual(len(units[0]), 2)  # 锚点 + 一个匹配 YOLO
+
+    def test_hand_only_yolo_dedup_overlapping_detections(self):
+        """无 JSON 商品时，手旁重叠 YOLO 多检只保留一个商品单元。"""
+        hand = box(40, 40, 80, 80)
+        high = Detection(box(45, 45, 75, 75), 0.9, 0, "undefined_pack")
+        low = Detection(box(48, 48, 78, 78), 0.4, 1, "undefined_pack")
+        units, selected, unmatched = select_handheld_geometry(
+            [],
+            [hand],
+            [],
+            [high, low],
+            width=100,
+            height=100,
+            min_iou=0.05,
+            min_overlap=0.2,
+            hand_expand_ratio=0.15,
+            include_hand_matched=True,
+        )
+        self.assertEqual(unmatched, 0)
+        self.assertEqual(selected, {0, 1})
+        self.assertEqual(len(units), 1)
+        self.assertEqual(units[0][0], high.points)
 
     def test_cluster_overlap_is_transitive(self):
         """商品-商品重叠具有传递性；手不桥接商品，且须与商品直接重叠才纳入。"""

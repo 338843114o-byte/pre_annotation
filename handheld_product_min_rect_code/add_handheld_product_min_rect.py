@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 使用商品 YOLO 模型和图片对应 JSON 中的已有标注，追加覆盖手拿商品的
-最小外接矩形（按重叠连通聚类；必要时缩圈/拆分）。
+最小外接矩形（按 AABB 重叠连通聚类；必要时缩圈/拆分）。
 
 核心保证：
 1. 原 JSON 顶层字段、原 shapes 内容和顺序完全不变。
@@ -10,18 +10,16 @@
 3. 新 shape 沿用原 JSON 的字段结构；不写入模型路径、类别编号等额外元数据。
 4. 支持普通 YOLO 检测框和 YOLO OBB 旋转框。
 
-默认识别逻辑：
-- 手持物品几何以 YOLO 商品检测为准，不依赖“必须有手”：
-  · 若存在与手相交的 YOLO 框，优先只用这些框（远离手的货架框丢弃）；
-  · 若无手，或手与所有 YOLO 都不相交，则使用全部 YOLO 商品框。
-  JSON 商品（瓶装/未定义包装/严重遮挡/过于模糊等）不参与生成几何，仅用于事后覆盖校验。
-- 手与 YOLO 商品只需真实重叠/相交即可关联，不用面积比过滤；孤立手直接舍去。
-- 聚类：商品↔商品 AABB 重叠可传递合并；手↔商品真实相交则并入同一类（一只手可桥接
-  多件不相交商品）；手↔手永不合并，也不能单独成类。
-- 每一类按 2.1 全框 → 2.2 去手 → 逐商品缩圈；含 12px 边距后 OBB 边长不超过原图
-  对应边一半；贴边侧去掉边距。单品仍超限则取消大小限制。
-- 生成后覆盖校验：交面积(JSON手持商品, 最小外接矩形) / JSON手持商品面积 ≥0.9，
-  未覆盖则汇总上报。
+默认识别逻辑（JSON 锚点 + YOLO 手旁补检，重叠去重）：
+- JSON 中除“手/头/售货柜/遮挡类/最小外接矩形”外的已有 shape，视为手拿
+  商品标注锚点；也可用 --product_labels 明确指定（建议包含「未定义包装」「严重遮挡」「过于模糊」等）。
+- 每个 JSON 商品锚点可匹配一个 YOLO 框细化边界；漏检时仍保留 JSON 框。
+- JSON 有“手”时，仅对「尚未与任何 JSON 商品重叠的手」做 YOLO 补检，
+  用于补充漏标手拿商品；已有 JSON 商品的手不再拉 YOLO，避免错框抬高数量。
+  手旁多个高度重叠的 YOLO 框只保留一个。
+- 默认忽略 YOLO 中的售货柜/手机等非商品类别，并拒绝远大于锚点的检测框。
+- “遮挡”等辅助区域仅在与某个商品单元空间重叠时挂到该单元；
+  与所有商品都不重叠时单独成单元。
 """
 
 from __future__ import annotations
@@ -66,8 +64,6 @@ DEFAULT_HAND_MAX_CENTER_DIST_RATIO = 1.25
 DEFAULT_MAX_SIDE_RATIO = 0.5
 # 兼容旧参数名：语义已改为边长比，不再表示面积比。
 DEFAULT_MAX_RECT_AREA_RATIO = DEFAULT_MAX_SIDE_RATIO
-# JSON 手持物品被某个最小外接矩形覆盖的最小面积比。
-DEFAULT_JSON_COVERAGE_RATIO = 0.9
 
 # 一个商品单元：同一商品的若干多边形（JSON 锚点 + 匹配 YOLO / 遮挡等）。
 ProductUnit = List[List[List[float]]]
@@ -98,7 +94,6 @@ class ProcessResult:
     anchor_count: int
     yolo_detection_count: int
     selected_yolo_count: int
-    uncovered_json_products: Tuple[str, ...] = ()
 
 
 def parse_args() -> argparse.Namespace:
@@ -268,15 +263,6 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=None,
         help="已弃用：等同 --max_side_ratio（边长比，不再是面积比）。",
-    )
-    parser.add_argument(
-        "--json_coverage_ratio",
-        type=float,
-        default=DEFAULT_JSON_COVERAGE_RATIO,
-        help=(
-            "生成后校验：JSON 手持物品与某个最小外接矩形的交面积/"
-            "物品面积需≥该阈值，否则上报未覆盖。默认 0.9。"
-        ),
     )
 
     parser.add_argument(
@@ -778,22 +764,23 @@ def select_handheld_geometry(
     hand_max_center_dist_ratio: float = DEFAULT_HAND_MAX_CENTER_DIST_RATIO,
 ) -> Tuple[List[ProductUnit], Set[int], int]:
     """
-    返回商品单元列表、选中的检测索引、未匹配 JSON 锚点数。
+    返回商品单元列表、选中的检测索引、未匹配锚点数。
 
-    手持几何以 YOLO 为准，不强制要求有手：
-    - 若开启手关联且存在与手相交的 YOLO，优先只用这些框；
-    - 否则（无手，或手与全部 YOLO 都不相交）使用全部 YOLO 商品框。
-    手-商品只用真实相交判定，不受 max_area_ratio 限制。重叠 YOLO 去重。
-    JSON 锚点/辅助框不参与生成单元（仅统计未匹配锚点数）。
+    每个单元对应一个手持商品：JSON 锚点（可附带匹配 YOLO 框），以及手旁、
+    尚未被已有单元覆盖的 YOLO 框。手旁重叠多检只保留置信度更高的一个。
+    遮挡等辅助区域仅挂到与之 AABB 重叠的商品单元；无重叠则单独成单元，
+    避免远处遮挡被硬并到另一侧。手不在此并入，改由面积策略决定。
     """
-    del include_nearby_hands, hand_near_expand_ratio, hand_max_center_dist_ratio, auxiliary
+    del include_nearby_hands, hand_near_expand_ratio, hand_max_center_dist_ratio
     product_units: List[ProductUnit] = []
     selected_detection_indices: Set[int] = set()
     unmatched_anchor_count = 0
 
     for anchor in anchors:
-        matched = False
-        for detection in detections:
+        unit: ProductUnit = [list(anchor)]
+        best_index: Optional[int] = None
+        best_score = -1.0
+        for index, detection in enumerate(detections):
             match = compare_polygons(
                 anchor,
                 detection.points,
@@ -801,11 +788,33 @@ def select_handheld_geometry(
                 min_overlap=min_overlap,
                 max_area_ratio=max_area_ratio,
             )
-            if match.matched:
-                matched = True
-                break
-        if not matched:
+            if not match.matched:
+                continue
+            candidate_score = match.score + detection.score * 0.01
+            if candidate_score > best_score:
+                best_score = candidate_score
+                best_index = index
+        if best_index is None:
             unmatched_anchor_count += 1
+        else:
+            selected_detection_indices.add(best_index)
+            unit.append(detections[best_index].points)
+        product_units.append(unit)
+
+    def detection_covered_by_existing_units(detection_points: Sequence[Sequence[float]]) -> bool:
+        """与已有商品单元任一多边形已匹配，则视为同一商品，不再新建单元。"""
+        for unit in product_units:
+            for poly in unit:
+                match = compare_polygons(
+                    poly,
+                    detection_points,
+                    min_iou=min_iou,
+                    min_overlap=min_overlap,
+                    max_area_ratio=max_area_ratio,
+                )
+                if match.matched:
+                    return True
+        return False
 
     def detection_overlaps_kept(
         detection_points: Sequence[Sequence[float]], kept_indices: Sequence[int]
@@ -822,84 +831,111 @@ def select_handheld_geometry(
                 return True
         return False
 
-    candidate_indices: List[int] = []
+    # 手旁 YOLO 补检：只对「尚未压住任何已有商品」的手启用，避免已有 JSON
+    # 商品的手再拉进偏移/误检 YOLO；重叠多检去重。
     if include_hand_matched and hands:
-        # 手与商品面积差常很大，只用真实相交（可对手略扩展）。
+        orphan_hands: List[List[List[float]]] = []
+        for hand in hands:
+            hand_bounds = polygons_axis_aligned_bounds([hand])
+            touches_existing = False
+            if hand_bounds is not None:
+                for unit in product_units:
+                    # 优先真实多边形相交；AABB 相交时再确认，减少虚高
+                    if any(polygons_intersect(hand, poly) for poly in unit if poly):
+                        touches_existing = True
+                        break
+                    unit_bounds = polygons_axis_aligned_bounds(unit)
+                    if unit_bounds is not None and aabb_intersects(
+                        hand_bounds, unit_bounds
+                    ):
+                        # AABB 虚高时用扩展手再比一次 overlap，避免漏判
+                        if any(
+                            compare_polygons(
+                                hand,
+                                poly,
+                                min_iou=min_iou,
+                                min_overlap=min_overlap,
+                                max_area_ratio=max_area_ratio,
+                            ).matched
+                            for poly in unit
+                            if poly
+                        ):
+                            touches_existing = True
+                            break
+            if not touches_existing:
+                orphan_hands.append(hand)
+
         expanded_hands = [
             expanded_axis_aligned_polygon(hand, hand_expand_ratio, width, height)
-            for hand in hands
+            for hand in orphan_hands
         ]
+        hand_candidates: List[int] = []
         for index, detection in enumerate(detections):
+            if index in selected_detection_indices:
+                continue
+            if detection_covered_by_existing_units(detection.points):
+                selected_detection_indices.add(index)
+                continue
             for hand in expanded_hands:
-                if polygons_intersect(hand, detection.points):
-                    candidate_indices.append(index)
+                match = compare_polygons(
+                    hand,
+                    detection.points,
+                    min_iou=min_iou,
+                    min_overlap=min_overlap,
+                    max_area_ratio=max_area_ratio,
+                )
+                if match.matched:
+                    hand_candidates.append(index)
                     break
-    if not candidate_indices:
-        # 无手，或手挂不上任何 YOLO：仍用全部 YOLO 生成最小外接矩形。
-        candidate_indices = list(range(len(detections)))
-
-    candidate_indices.sort(
-        key=lambda idx: float(detections[idx].score), reverse=True
-    )
-    kept_indices: List[int] = []
-    for index in candidate_indices:
-        if detection_overlaps_kept(detections[index].points, kept_indices):
+        hand_candidates.sort(
+            key=lambda idx: float(detections[idx].score), reverse=True
+        )
+        kept_hand_indices: List[int] = []
+        for index in hand_candidates:
+            if detection_overlaps_kept(detections[index].points, kept_hand_indices):
+                selected_detection_indices.add(index)
+                continue
+            if detection_covered_by_existing_units(detections[index].points):
+                selected_detection_indices.add(index)
+                continue
+            kept_hand_indices.append(index)
             selected_detection_indices.add(index)
-            continue
-        kept_indices.append(index)
-        selected_detection_indices.add(index)
-        product_units.append([detections[index].points])
+            product_units.append([detections[index].points])
+
+    if auxiliary:
+        for aux in auxiliary:
+            aux_bounds = polygons_axis_aligned_bounds([aux])
+            if aux_bounds is None:
+                continue
+            overlapping_units: List[int] = []
+            for unit_index, unit in enumerate(product_units):
+                unit_bounds = polygons_axis_aligned_bounds(unit)
+                if unit_bounds is not None and aabb_intersects(aux_bounds, unit_bounds):
+                    overlapping_units.append(unit_index)
+            if overlapping_units:
+                # 与多个商品重叠时挂到中心最近的一个
+                aux_center = polygons_center([aux])
+                best_unit = overlapping_units[0]
+                best_dist = float("inf")
+                if aux_center is not None:
+                    for unit_index in overlapping_units:
+                        center = polygons_center(product_units[unit_index])
+                        if center is None:
+                            continue
+                        dist = float(
+                            np.hypot(
+                                aux_center[0] - center[0], aux_center[1] - center[1]
+                            )
+                        )
+                        if dist < best_dist:
+                            best_dist = dist
+                            best_unit = unit_index
+                product_units[best_unit].append(list(aux))
+            else:
+                # 与任何商品都不重叠：单独成单元，可与附近手聚类成独立外接矩形
+                product_units.append([list(aux)])
 
     return product_units, selected_detection_indices, unmatched_anchor_count
-
-
-def polygon_intersection_area(
-    poly_a: Sequence[Sequence[float]], poly_b: Sequence[Sequence[float]]
-) -> float:
-    """两凸多边形相交面积；不相交返回 0。"""
-    a = as_convex_polygon(poly_a)
-    b = as_convex_polygon(poly_b)
-    if len(a) < 3 or len(b) < 3:
-        return 0.0
-    try:
-        _ret, inter = cv2.intersectConvexConvex(a, b)
-    except cv2.error:
-        return 0.0
-    if inter is None or len(inter) < 3:
-        return 0.0
-    return max(0.0, abs(float(cv2.contourArea(inter))))
-
-
-def max_product_coverage_by_rects(
-    product_polygon: Sequence[Sequence[float]],
-    rectangles: Sequence[Sequence[Sequence[float]]],
-) -> float:
-    """物品多边形相对所有外接矩形的最大覆盖率（交面积/物品面积）。"""
-    product_area = polygon_area(product_polygon)
-    if product_area <= 1e-6:
-        return 1.0
-    best = 0.0
-    for rect in rectangles:
-        if not rect:
-            continue
-        best = max(best, polygon_intersection_area(product_polygon, rect) / product_area)
-    return best
-
-
-def find_uncovered_json_products(
-    product_polygons: Sequence[Sequence[Sequence[float]]],
-    product_labels_list: Sequence[str],
-    rectangles: Sequence[Sequence[Sequence[float]]],
-    *,
-    min_coverage: float = DEFAULT_JSON_COVERAGE_RATIO,
-) -> List[Tuple[str, float]]:
-    """返回未被充分覆盖的 JSON 手持物品：(label, best_coverage)。"""
-    uncovered: List[Tuple[str, float]] = []
-    for poly, label in zip(product_polygons, product_labels_list):
-        coverage = max_product_coverage_by_rects(poly, rectangles)
-        if coverage + 1e-9 < float(min_coverage):
-            uncovered.append((str(label), float(coverage)))
-    return uncovered
 
 
 def flatten_product_units(
@@ -1083,20 +1119,18 @@ def cluster_product_units_by_aabb_overlap(
     hand_polygons: Sequence[Sequence[Sequence[float]]],
 ) -> List[Dict[str, Any]]:
     """
-    重叠连通聚类：
-    - 商品↔商品：AABB 重叠可传递合并；
-    - 手↔商品：真实多边形相交则并入同一类（一只手可桥接多件不相交商品）；
-    - 手↔手：永不合并；纯手、无商品的连通分量丢弃。
-    返回 [{'units': [...], 'hands': [...]}]。
+    商品单元按 AABB 重叠做连通分量聚类（仅商品↔商品，传递性）。
+    手不参与商品聚类、不通过手桥接商品；仅当手与该类内某商品多边形真实相交时纳入该类。
+    返回 [{'units': [...], 'hands': [...]}]；与任何商品都不重叠的手丢弃。
     """
     units = [list(unit) for unit in product_units if unit]
     hands = [list(hand) for hand in hand_polygons if hand]
     if not units:
         return []
 
+    unit_bounds = [polygons_axis_aligned_bounds(unit) for unit in units]
     n_units = len(units)
-    n_hands = len(hands)
-    parent = list(range(n_units + n_hands))
+    parent = list(range(n_units))
 
     def find(index: int) -> int:
         while parent[index] != index:
@@ -1110,7 +1144,6 @@ def cluster_product_units_by_aabb_overlap(
         if root_l != root_r:
             parent[root_r] = root_l
 
-    unit_bounds = [polygons_axis_aligned_bounds(unit) for unit in units]
     for i in range(n_units):
         if unit_bounds[i] is None:
             continue
@@ -1120,25 +1153,20 @@ def cluster_product_units_by_aabb_overlap(
             if aabb_intersects(unit_bounds[i], unit_bounds[j]):
                 union(i, j)
 
-    # 手只与商品合并，手与手永不 union
-    for hand_offset, hand in enumerate(hands):
-        hand_index = n_units + hand_offset
-        for unit_index, unit in enumerate(units):
-            if hand_directly_overlaps_products(hand, unit):
-                union(hand_index, unit_index)
-
     grouped: Dict[int, Dict[str, Any]] = {}
-    for unit_index in range(n_units):
-        root = find(unit_index)
+    for index in range(n_units):
+        root = find(index)
         bucket = grouped.setdefault(root, {"units": [], "hands": []})
-        bucket["units"].append(units[unit_index])
-    for hand_offset, hand in enumerate(hands):
-        hand_index = n_units + hand_offset
-        root = find(hand_index)
-        # 纯手连通分量（未接到任何商品）丢弃
-        if root not in grouped:
-            continue
-        grouped[root]["hands"].append(hand)
+        bucket["units"].append(units[index])
+
+    for hand in hands:
+        attached_roots: Set[int] = set()
+        for index, unit in enumerate(units):
+            # 与该商品单元内任一多边形真实相交才挂上
+            if hand_directly_overlaps_products(hand, unit):
+                attached_roots.add(find(index))
+        for root in attached_roots:
+            grouped[root]["hands"].append(hand)
 
     return [bucket for bucket in grouped.values() if bucket["units"]]
 
@@ -1823,8 +1851,7 @@ def process_one(
     if args.skip_existing and any(
         is_rect_label(label, args.rect_label) for label in existing_labels
     ):
-        return ProcessResult(0, True, 0, 0, 0, ())
-
+        return ProcessResult(0, True, 0, 0, 0)
 
     width, height = get_image_size_from_json_or_file(original_data, image_path)
     anchors, hands, auxiliary = collect_json_polygons(
@@ -1837,6 +1864,12 @@ def process_one(
         auxiliary_labels=auxiliary_labels,
         rect_label=args.rect_label,
     )
+    if not anchors and not hands:
+        raise ValueError(
+            "JSON 中既没有商品锚点，也没有手部标注；为避免把货架商品误当成手拿商品，"
+            "本文件未追加。请检查 --product_labels/--ignore_labels/--hand_labels。"
+        )
+
     predict_kwargs: Dict[str, Any] = {
         "source": str(image_path),
         "imgsz": args.imgsz,
@@ -1872,14 +1905,13 @@ def process_one(
         hand_near_expand_ratio=float(args.hand_near_expand_ratio),
         hand_max_center_dist_ratio=float(args.hand_max_center_dist_ratio),
     )
-    del unmatched_anchor_count
     if args.require_yolo_match and not selected_indices:
-        raise ValueError("商品 YOLO 没有检测到可用的商品框")
+        raise ValueError("商品 YOLO 没有检测到与 JSON 商品/手部匹配的框")
     if not product_units:
-        raise ValueError(
-            "YOLO 未检出任何商品框，无法生成最小外接矩形。"
-            "JSON 商品不参与生成几何。"
-        )
+        if anchors and unmatched_anchor_count == len(anchors):
+            product_units = [[list(anchor)] for anchor in anchors]
+        else:
+            raise ValueError("没有得到任何手拿商品范围")
 
     sized_rects = build_sized_min_rectangles(
         product_units,
@@ -1902,40 +1934,6 @@ def process_one(
         )
         for rectangle, _policy, product_count in sized_rects
     ]
-    rectangles_only = [rectangle for rectangle, _policy, _count in sized_rects]
-
-    # 收集 JSON 手持物品（含标签）做覆盖校验
-    json_product_polys: List[List[List[float]]] = []
-    json_product_labels: List[str] = []
-    for shape in shapes:
-        if not isinstance(shape, dict):
-            continue
-        label = str(shape.get("label", "")).strip()
-        if not label or is_rect_label(label, args.rect_label):
-            continue
-        if label in hand_labels or label in auxiliary_labels:
-            continue
-        if product_labels:
-            if not label_matches(label, product_labels):
-                continue
-        elif label in ignore_labels:
-            continue
-        polygon = shape_polygon(shape, width, height)
-        if polygon is None:
-            continue
-        json_product_polys.append(polygon)
-        json_product_labels.append(label)
-
-    uncovered = find_uncovered_json_products(
-        json_product_polys,
-        json_product_labels,
-        rectangles_only,
-        min_coverage=float(args.json_coverage_ratio),
-    )
-    uncovered_msgs = tuple(
-        f"{json_path}: label={lab} coverage={cov:.3f} < {float(args.json_coverage_ratio):.3f}"
-        for lab, cov in uncovered
-    )
 
     if not args.dry_run:
         updated_text = append_shapes_preserving_original_text(original_text, new_shapes)
@@ -1952,7 +1950,6 @@ def process_one(
         anchor_count=len(anchors),
         yolo_detection_count=len(detections),
         selected_yolo_count=len(selected_indices),
-        uncovered_json_products=uncovered_msgs,
     )
 
 
@@ -2029,8 +2026,6 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("max_side_ratio 必须大于 0")
     if args.max_match_area_ratio <= 0:
         raise ValueError("max_match_area_ratio 必须大于 0")
-    if not 0.0 <= float(args.json_coverage_ratio) <= 1.0:
-        raise ValueError("json_coverage_ratio 必须在 [0,1]")
     weights = Path(args.weights).expanduser().resolve()
     if not weights.is_file():
         raise FileNotFoundError(f"YOLO 权重不存在：{weights}")
@@ -2092,7 +2087,6 @@ def main() -> None:
     selected_yolo_total = 0
     skipped_existing = 0
     failures: List[str] = []
-    uncovered_reports: List[str] = []
     started_at = time.time()
     progress_every = max(1, args.progress_every)
     status_path = Path(args.status_file).expanduser().resolve() if args.status_file else None
@@ -2115,10 +2109,6 @@ def main() -> None:
             selected_yolo_total += result.selected_yolo_count
             if result.skipped_existing:
                 skipped_existing += 1
-            if result.uncovered_json_products:
-                uncovered_reports.extend(result.uncovered_json_products)
-                for msg in result.uncovered_json_products:
-                    print(f"[UNCOVERED] {msg}", file=sys.stderr)
         except Exception as exc:
             message = (
                 f"image={image_path}, json={json_path}, "
@@ -2152,7 +2142,6 @@ def main() -> None:
                     "selected_yolo_detections": selected_yolo_total,
                     "skipped_existing": skipped_existing,
                     "errors": len(failures),
-                    "uncovered_json_products": len(uncovered_reports),
                     "finished": index == len(pairs),
                     "last_json": str(json_path),
                     "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -2171,14 +2160,8 @@ def main() -> None:
     print(
         f"完成。配对数={len(pairs)}；新增最小外接矩形={added}；"
         f"纳入 YOLO 商品框={selected_yolo_total}；跳过已有={skipped_existing}；"
-        f"失败={len(failures)}；JSON未覆盖={len(uncovered_reports)}"
+        f"失败={len(failures)}"
     )
-    if uncovered_reports:
-        print("[WARN] 以下 JSON 手持物品未被最小外接矩形充分覆盖：", file=sys.stderr)
-        for msg in uncovered_reports[:50]:
-            print(f"  - {msg}", file=sys.stderr)
-        if len(uncovered_reports) > 50:
-            print(f"  ... 另有 {len(uncovered_reports) - 50} 条", file=sys.stderr)
     if args.dry_run:
         print("dry-run：没有写入 JSON。")
     if failures:

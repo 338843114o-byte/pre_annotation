@@ -33,6 +33,7 @@ from add_handheld_product_min_rect import (  # noqa: E402
     rectangle_aabb_size,
     select_handheld_geometry,
     verify_only_shapes_appended,
+    yolo_class_to_json_label,
 )
 
 
@@ -773,6 +774,36 @@ class CoreTests(unittest.TestCase):
         self.assertNotIn("\n", updated.replace("\r\n", ""))
         parsed = json.loads(updated)
         self.assertEqual(parsed["shapes"], [shape])
+
+    def test_yolo_class_to_json_label(self):
+        self.assertEqual(yolo_class_to_json_label("bottle"), "瓶装")
+        self.assertEqual(yolo_class_to_json_label("hand"), "手")
+        self.assertEqual(yolo_class_to_json_label("undefined_pack"), "未定义包装")
+        self.assertEqual(yolo_class_to_json_label("vending_machine"), "售货柜")
+        self.assertEqual(yolo_class_to_json_label("unknown_xyz"), "unknown_xyz")
+
+    def test_yolo_mode_empty_anchors_only_hand_matched(self):
+        """无 JSON 商品锚点时，只保留与手相交的 YOLO 商品，不吞掉远处货架框。"""
+        hands = [box(20, 20, 50, 50)]
+        detections = [
+            Detection(points=box(25, 25, 45, 45), score=0.9, class_id=2, class_name="bottle"),
+            Detection(points=box(200, 200, 250, 250), score=0.95, class_id=2, class_name="bottle"),
+        ]
+        units, selected, unmatched = select_handheld_geometry(
+            anchors=[],
+            hands=hands,
+            auxiliary=[],
+            detections=detections,
+            width=400,
+            height=400,
+            min_iou=0.05,
+            min_overlap=0.2,
+            hand_expand_ratio=0.15,
+            include_hand_matched=True,
+        )
+        self.assertEqual(unmatched, 0)
+        self.assertEqual(len(units), 1)
+        self.assertEqual(selected, {0})
 
 
 if __name__ == "__main__":

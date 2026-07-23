@@ -1,37 +1,54 @@
 # 手拿商品最小外接矩形标注脚本
 
-本脚本使用“商品 YOLO 检测结果 + 图片同名 JSON 的原有标注”，为每张图追加一个覆盖全部手拿商品的最小外接矩形。
+本脚本支持两种标注来源：
 
-## 1. JSON 修改保证
+- **json（默认）**：商品 YOLO + 图片同名 JSON 的原有标注，追加手拿商品最小外接矩形。
+- **yolo**：无现成 JSON 时，用手数模（`for_hands.pt`）+ 商品模（`for_skus.pt`）检测，先写出完整 LabelMe 标签，再按同一套几何逻辑生成最小外接矩形。
+
+## 1. JSON 修改保证（label_source=json）
 
 - 原 JSON 顶层字段和值不变。
 - 原 `shapes` 中每个 shape 的字段、值、顺序均不变。
-- 只在 `shapes` 数组末尾追加一个 `label` 为 `最小外接矩形` 的新 shape。
+- 只在 `shapes` 数组末尾追加一个 `label` 为 `最小外接矩形_N` 的新 shape。
 - 新 shape 沿用当前 JSON 已有 shape 的字段结构，`shape_type` 为 `rotation`，`points` 为四个顶点。
 - 默认把完整数据集复制到新输出目录后再修改，输入目录不受影响。
 - 默认检测到已有 `最小外接矩形` 时跳过，防止断点续跑产生重复标注。
 
-新增内容示意：
+## 2. 无 JSON 模式（label_source=yolo）
 
-```json
-{
-  "label": "最小外接矩形",
-  "score": null,
-  "points": [[x1, y1], [x2, y2], [x3, y3], [x4, y4]],
-  "group_id": null,
-  "description": "",
-  "difficult": false,
-  "shape_type": "rotation",
-  "flags": {},
-  "attributes": {},
-  "kie_linking": [],
-  "direction": 0.0
-}
+流程：
+
+1. 递归查找 `images/` 下图片；可自动创建同级 `json_labels/`。
+2. `for_hands.pt` 检测手；`for_skus.pt` 检测商品/售货柜等。
+3. **保留全部 YOLO 检测**，映射为中文 LabelMe label 并写出同名 JSON（含 score）。
+4. 最小外接矩形逻辑与「JSON 无商品锚点、仅有手」一致：只纳入与手相交的商品框，**不会**把货架上未与手关联的 SKU 全部框进去。
+5. 有手但手旁无商品、或完全无手时：仍写出 YOLO 标签，但不追加最小外接矩形（并打 WARN）。
+
+类名映射示例：`bottle→瓶装`、`can→罐装`、`hand→手`、`vending_machine→售货柜`、`undefined_pack→未定义包装`、`occluded→严重遮挡`。
+
+```bash
+export DATASET_ROOT=/你的/仅有images的数据集根目录
+export WEIGHTS=/home/data_manager/jiangfan/for_skus.pt
+export HAND_WEIGHTS=/home/data_manager/jiangfan/for_hands.pt
+export LABEL_SOURCE=yolo
+export OUTPUT_ROOT=/home/data_manager/jiangfan/yolo_minrect_out
+bash run.sh
 ```
 
-实际字段及字段顺序会以每个 JSON 中已有的 shape 为模板，不会强制变成上面固定顺序。
+或直接调用：
 
-## 2. 如何确定“手拿商品”
+```bash
+python add_handheld_product_min_rect.py \
+  --dataset_root /你的/数据集 \
+  --weights /home/data_manager/jiangfan/for_skus.pt \
+  --hand_weights /home/data_manager/jiangfan/for_hands.pt \
+  --label_source yolo \
+  --output_root /home/data_manager/jiangfan/yolo_minrect_out \
+  --device 0 \
+  --skip_existing
+```
+
+## 3. 如何确定“手拿商品”（json 模式）
 
 默认流程（JSON 锚点 + YOLO 手旁补检，重叠去重）：
 
@@ -44,9 +61,7 @@
 
 这个逻辑不会把商品 YOLO 检出的全部货架商品直接放进矩形。
 
-## 3. 数据目录要求
-
-脚本递归查找成对目录：
+## 4. 数据目录要求
 
 ```text
 数据集根目录/
@@ -54,102 +69,73 @@
     ├── images/
     │   ├── a.jpg
     │   └── b.jpg
-    └── json_labels/
+    └── json_labels/          # yolo 模式可缺失，脚本会创建
         ├── a.json
         └── b.json
 ```
 
-图片与 JSON 必须同名，仅扩展名不同。
+json 模式：图片与 JSON 必须同名。yolo 模式：只需 `images/`。
 
-## 4. 直接运行
-
-本压缩包不创建新环境，直接使用你已有的 Python/Conda 环境。
+## 5. 直接运行（有 JSON）
 
 ```bash
 cd /脚本解压目录/handheld_product_min_rect_code
 
 export DATASET_ROOT=/home/data_manager/jiangfan/1
-export WEIGHTS=/你的/商品YOLO模型/best.pt
+export WEIGHTS=/home/data_manager/jiangfan/for_skus.pt
 export OUTPUT_ROOT=/home/data_manager/jiangfan/handheld_product_min_rect_labeled
 export PYTHON_BIN=python
 export DEVICE=0
+export LABEL_SOURCE=json
 
 bash run.sh
 ```
 
-如果当前环境缺依赖：
+缺依赖时：
 
 ```bash
 python -m pip install -r requirements.txt
 ```
 
-## 5. 推荐明确设置商品标签
-
-如果 JSON 里除商品外还有其他业务标签，推荐明确列出商品标签，避免自动识别包含无关 shape：
+## 6. 推荐明确设置商品标签
 
 ```bash
 export PRODUCT_LABELS='瓶装,罐装,袋装,盒装,未定义包装,严重遮挡,过于模糊'
 bash run.sh
 ```
 
-如果商品 YOLO 模型中所有类别都是商品，`PRODUCT_CLASSES` 留空即可。若模型还检测手、头或其他目标，应只填写商品类别编号：
+若模型还检测手、头或其他目标，应只填写商品类别编号：
 
 ```bash
 export PRODUCT_CLASSES='0,2,3'
 bash run.sh
 ```
 
-## 6. 断点续跑与后台运行
-
-输出目录已存在时继续：
+## 7. 断点续跑与后台运行
 
 ```bash
 export RESUME=1
 bash run.sh
 ```
 
-后台运行：
-
 ```bash
-export RESUME=1        # 首次运行可不设置
+export RESUME=1
 export DETACH=1
 bash run.sh
 ```
 
-启动后终端会显示日志路径，可使用 `tail -f 日志路径` 查看进度。每个 JSON 已有 `最小外接矩形` 时会自动跳过。
-
-完全覆盖已有输出目录重新运行：
+完全覆盖：
 
 ```bash
 export OVERWRITE=1
 bash run.sh
 ```
 
-请确认 `OUTPUT_ROOT` 路径正确后再使用覆盖模式。
-
-## 7. 水平矩形、边距和其他参数
-
-默认生成最小面积旋转矩形：
+## 8. 水平矩形、边距和其他参数
 
 ```bash
-export RECTANGLE_MODE=min_area
-```
-
-如需水平矩形：
-
-```bash
-export RECTANGLE_MODE=axis_aligned
-```
-
-外扩 5 像素：
-
-```bash
+export RECTANGLE_MODE=min_area   # 或 axis_aligned
 export MARGIN=5
-```
-
-常用推理参数：
-
-```bash
 export IMGSZ=1024
 export CONF=0.25
 export IOU=0.70
@@ -158,36 +144,10 @@ export MIN_MATCH_OVERLAP=0.20
 export HAND_EXPAND_RATIO=0.15
 ```
 
-## 8. 直接调用 Python
-
-```bash
-python add_handheld_product_min_rect.py \
-  --dataset_root /home/data_manager/jiangfan/1 \
-  --weights /你的/商品YOLO模型/best.pt \
-  --output_root /home/data_manager/jiangfan/handheld_product_min_rect_labeled \
-  --device 0 \
-  --imgsz 1024 \
-  --conf 0.25 \
-  --iou 0.70 \
-  --product_labels '瓶装,罐装,袋装,盒装' \
-  --rectangle_mode min_area \
-  --skip_existing
-```
-
-只测试推理和统计、不写 JSON：
-
-```bash
-python add_handheld_product_min_rect.py \
-  --dataset_root /home/data_manager/jiangfan/1 \
-  --weights /你的/商品YOLO模型/best.pt \
-  --device 0 \
-  --dry_run
-```
-
-## 9. 无新增结果时的排查
+## 9. 无新增最小外接矩形时的排查
 
 - 日志提示“既没有商品锚点，也没有手部标注”：设置正确的 `PRODUCT_LABELS`，或检查 JSON 的 `label` 名称。
-- YOLO 模型还含非商品类别：设置 `PRODUCT_CLASSES`。
+- yolo 模式 WARN「无法生成最小外接矩形」：检查手数模是否检出到手，以及手旁是否有商品框。
+- YOLO 模型还含非商品类别：设置 `PRODUCT_CLASSES` / `IGNORE_YOLO_CLASS_NAMES`。
 - 商品框与 JSON 锚点偏差很大：适当降低 `MIN_MATCH_IOU` 或 `MIN_MATCH_OVERLAP`。
 - JSON 中手部与商品相距较远：适当增大 `HAND_EXPAND_RATIO`，但过大可能引入货架商品。
-- 脚本不会在没有 JSON 商品锚点且没有手部标注时使用全部 YOLO 框，以免误标整排货架商品。

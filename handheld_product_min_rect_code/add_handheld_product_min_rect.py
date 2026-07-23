@@ -1,25 +1,27 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-使用商品 YOLO 模型和图片对应 JSON 中的已有标注，追加覆盖手拿商品的
+使用商品 YOLO（及可选手部 YOLO）为图片生成/补充标注，并追加覆盖手拿商品的
 最小外接矩形（按 AABB 重叠连通聚类；必要时缩圈/拆分）。
 
-核心保证：
+两种标注来源（--label_source）：
+- json（默认）：沿用图片同名 JSON 的已有标注 + 商品 YOLO 细化/手旁补检。
+- yolo：无现成 JSON 时，用 --hand_weights + --weights 检测，先写出完整
+  LabelMe JSON（保留全部检测框），再按「空手锚点 + 手旁商品匹配」生成
+  最小外接矩形。不会把货架上未与手关联的 SKU 全部当成手拿商品。
+
+核心保证（json 模式）：
 1. 原 JSON 顶层字段、原 shapes 内容和顺序完全不变。
-2. 只在 shapes 数组末尾追加一个或多个 label=“最小外接矩形_N”的 shape（N 为框内手持商品数）。
+2. 只在 shapes 数组末尾追加一个或多个 label=“最小外接矩形_N”的 shape。
 3. 新 shape 沿用原 JSON 的字段结构；不写入模型路径、类别编号等额外元数据。
 4. 支持普通 YOLO 检测框和 YOLO OBB 旋转框。
 
 默认识别逻辑（JSON 锚点 + YOLO 手旁补检，重叠去重）：
 - JSON 中除“手/头/售货柜/遮挡类/最小外接矩形”外的已有 shape，视为手拿
-  商品标注锚点；也可用 --product_labels 明确指定（建议包含「未定义包装」「严重遮挡」「过于模糊」等）。
+  商品标注锚点；也可用 --product_labels 明确指定。
 - 每个 JSON 商品锚点可匹配一个 YOLO 框细化边界；漏检时仍保留 JSON 框。
-- JSON 有“手”时，仅对「尚未与任何 JSON 商品重叠的手」做 YOLO 补检，
-  用于补充漏标手拿商品；已有 JSON 商品的手不再拉 YOLO，避免错框抬高数量。
-  手旁多个高度重叠的 YOLO 框只保留一个。
-- 默认忽略 YOLO 中的售货柜/手机等非商品类别，并拒绝远大于锚点的检测框。
-- “遮挡”等辅助区域仅在与某个商品单元空间重叠时挂到该单元；
-  与所有商品都不重叠时单独成单元。
+- JSON 有“手”时，仅对「尚未与任何 JSON 商品重叠的手」做 YOLO 补检。
+- yolo 模式下等价于「无商品锚点、仅有手」：只纳入与手相交的商品框。
 """
 
 from __future__ import annotations
@@ -43,13 +45,29 @@ import numpy as np
 
 
 IMAGE_EXTS_DEFAULT = ".jpg,.jpeg,.png,.bmp,.webp"
-DEFAULT_IGNORE_LABELS = "手,头,售货柜,最小外接矩形"
+DEFAULT_IGNORE_LABELS = "手,头,售货柜,手机,信息不足,最小外接矩形"
 DEFAULT_HAND_LABELS = "手"
 DEFAULT_AUXILIARY_LABELS = "遮挡"
 # for_skus.pt 等模型里这些类别不是手上商品，默认排除。
 DEFAULT_IGNORE_YOLO_CLASS_NAMES = (
     "vending_machine,phone,too_blurry,insufficient_info"
 )
+# YOLO 英文类名 → LabelMe 中文 label（用于 --label_source yolo 写盘）。
+YOLO_CLASS_TO_JSON_LABEL: Dict[str, str] = {
+    "hand": "手",
+    "phone": "手机",
+    "vending_machine": "售货柜",
+    "bottle": "瓶装",
+    "can": "罐装",
+    "box": "盒装",
+    "bag": "袋装",
+    "bucket": "桶装",
+    "strip": "条装",
+    "undefined_pack": "未定义包装",
+    "occluded": "严重遮挡",
+    "too_blurry": "过于模糊",
+    "insufficient_info": "信息不足",
+}
 # 检测框面积相对 JSON 锚点过大时视为货架级误匹配。
 DEFAULT_MAX_MATCH_AREA_RATIO = 8.0
 DEFAULT_MARGIN = 12.0
@@ -94,13 +112,14 @@ class ProcessResult:
     anchor_count: int
     yolo_detection_count: int
     selected_yolo_count: int
+    labels_written: int = 0
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "使用商品 YOLO + 原 JSON 标注，向 shapes 末尾追加覆盖手拿商品的"
-            "最小外接矩形（必要时拆成多个）。"
+            "使用商品 YOLO（及可选手部 YOLO）生成/补充标注，并向 shapes 末尾追加"
+            "覆盖手拿商品的最小外接矩形（必要时拆成多个）。"
         )
     )
 
@@ -117,6 +136,21 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument("--weights", type=str, required=True, help="商品 YOLO 权重路径。")
+    parser.add_argument(
+        "--hand_weights",
+        type=str,
+        default="",
+        help="手部 YOLO 权重路径；--label_source yolo 时必填（如 for_hands.pt）。",
+    )
+    parser.add_argument(
+        "--label_source",
+        choices=("json", "yolo"),
+        default="json",
+        help=(
+            "标注来源：json=使用已有 JSON（默认）；"
+            "yolo=无 JSON 时用手数模+商品模检测并写出新 JSON，再算最小外接矩形。"
+        ),
+    )
     parser.add_argument(
         "--work_dir", type=str, default="./min_rect_work", help="input_zip 解压目录。"
     )
@@ -622,6 +656,88 @@ def filter_product_detections(
             continue
         filtered.append(detection)
     return filtered
+
+
+def yolo_class_to_json_label(class_name: str) -> str:
+    """将 YOLO 英文类名映射为 LabelMe 中文 label；未知类名原样返回。"""
+    key = str(class_name).strip()
+    mapped = YOLO_CLASS_TO_JSON_LABEL.get(key)
+    if mapped is not None:
+        return mapped
+    mapped = YOLO_CLASS_TO_JSON_LABEL.get(key.lower())
+    if mapped is not None:
+        return mapped
+    return key
+
+
+def make_yolo_label_shape(
+    label: str,
+    points: List[List[float]],
+    score: float,
+) -> Dict[str, Any]:
+    """从 YOLO 检测生成 LabelMe rotation shape（保留 score）。"""
+    return {
+        "kie_linking": [],
+        "direction": rectangle_direction(points),
+        "label": label,
+        "score": round(float(score), 6),
+        "points": points,
+        "group_id": None,
+        "description": "",
+        "difficult": False,
+        "shape_type": "rotation",
+        "flags": {},
+        "attributes": {},
+    }
+
+
+def build_labelme_document(
+    image_path: Path,
+    width: int,
+    height: int,
+    shapes: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    return {
+        "version": "3.3.1",
+        "flags": {},
+        "shapes": shapes,
+        "imagePath": image_path.name,
+        "imageData": None,
+        "imageHeight": int(height),
+        "imageWidth": int(width),
+    }
+
+
+def predict_detections(
+    model: Any,
+    image_path: Path,
+    *,
+    width: int,
+    height: int,
+    args: argparse.Namespace,
+    class_filter: Optional[List[int]] = None,
+) -> List[Detection]:
+    predict_kwargs: Dict[str, Any] = {
+        "source": str(image_path),
+        "imgsz": args.imgsz,
+        "conf": args.conf,
+        "iou": args.iou,
+        "device": args.device,
+        "verbose": False,
+    }
+    if class_filter is not None:
+        predict_kwargs["classes"] = sorted(class_filter)
+    results = model.predict(**predict_kwargs)
+    if not results:
+        raise RuntimeError(f"YOLO 没有返回推理结果：{image_path}")
+    return detections_from_result(results[0], width, height)
+
+
+def get_image_size(image_path: Path) -> Tuple[int, int]:
+    from PIL import Image
+
+    with Image.open(image_path) as image:
+        return int(image.width), int(image.height)
 
 
 def expanded_axis_aligned_polygon(
@@ -1808,6 +1924,8 @@ def find_image_json_pairs(
     image_dir_name: str,
     json_dir_name: str,
     image_extensions: Set[str],
+    *,
+    require_json: bool = True,
 ) -> List[Tuple[Path, Path]]:
     pairs: List[Tuple[Path, Path]] = []
     image_dirs = sorted(
@@ -1815,14 +1933,16 @@ def find_image_json_pairs(
     )
     for image_dir in image_dirs:
         json_dir = image_dir.parent / json_dir_name
-        if not json_dir.is_dir():
+        if require_json and not json_dir.is_dir():
             print(f"[WARN] 缺少对应 JSON 目录，跳过：{image_dir}", file=sys.stderr)
             continue
+        if not require_json:
+            json_dir.mkdir(parents=True, exist_ok=True)
         for image_path in sorted(image_dir.iterdir()):
             if not image_path.is_file() or image_path.suffix.lower() not in image_extensions:
                 continue
             json_path = json_dir / f"{image_path.stem}.json"
-            if not json_path.is_file():
+            if require_json and not json_path.is_file():
                 print(f"[WARN] 图片没有同名 JSON，跳过：{image_path}", file=sys.stderr)
                 continue
             pairs.append((image_path, json_path))
@@ -1870,21 +1990,15 @@ def process_one(
             "本文件未追加。请检查 --product_labels/--ignore_labels/--hand_labels。"
         )
 
-    predict_kwargs: Dict[str, Any] = {
-        "source": str(image_path),
-        "imgsz": args.imgsz,
-        "conf": args.conf,
-        "iou": args.iou,
-        "device": args.device,
-        "verbose": False,
-    }
-    if product_classes is not None:
-        predict_kwargs["classes"] = sorted(product_classes)
-    results = model.predict(**predict_kwargs)
-    if not results:
-        raise RuntimeError("YOLO 没有返回推理结果")
     detections = filter_product_detections(
-        detections_from_result(results[0], width, height),
+        predict_detections(
+            model,
+            image_path,
+            width=width,
+            height=height,
+            args=args,
+            class_filter=sorted(product_classes) if product_classes is not None else None,
+        ),
         product_classes=product_classes,
         ignore_class_names=ignore_yolo_class_names,
     )
@@ -1950,6 +2064,142 @@ def process_one(
         anchor_count=len(anchors),
         yolo_detection_count=len(detections),
         selected_yolo_count=len(selected_indices),
+    )
+
+
+def process_one_from_yolo(
+    hand_model: Any,
+    sku_model: Any,
+    image_path: Path,
+    json_path: Path,
+    args: argparse.Namespace,
+    product_classes: Optional[Set[int]],
+    ignore_yolo_class_names: Set[str],
+) -> ProcessResult:
+    """
+    无现成 JSON：双手/商品 YOLO 检测 → 写出完整标签 → 按手旁匹配生成最小外接矩形。
+
+    故意不把全部 SKU 检测当作商品锚点，避免货架商品被整排框进最小外接矩形。
+    """
+    if json_path.is_file():
+        existing_data = json.loads(json_path.read_text(encoding="utf-8"))
+        existing_shapes = existing_data.get("shapes") or []
+        existing_labels = {
+            str(shape.get("label", ""))
+            for shape in existing_shapes
+            if isinstance(shape, dict)
+        }
+        if args.skip_existing and any(
+            is_rect_label(label, args.rect_label) for label in existing_labels
+        ):
+            return ProcessResult(0, True, 0, 0, 0, labels_written=0)
+
+    width, height = get_image_size(image_path)
+    hand_detections = predict_detections(
+        hand_model, image_path, width=width, height=height, args=args
+    )
+    sku_detections_all = predict_detections(
+        sku_model, image_path, width=width, height=height, args=args
+    )
+    product_detections = filter_product_detections(
+        sku_detections_all,
+        product_classes=product_classes,
+        ignore_class_names=ignore_yolo_class_names,
+    )
+
+    label_shapes: List[Dict[str, Any]] = []
+    hands: List[List[List[float]]] = []
+    for detection in hand_detections:
+        label = yolo_class_to_json_label(detection.class_name)
+        label_shapes.append(
+            make_yolo_label_shape(label, detection.points, detection.score)
+        )
+        if label == "手" or detection.class_name.strip().lower() == "hand":
+            hands.append(list(detection.points))
+
+    for detection in sku_detections_all:
+        label = yolo_class_to_json_label(detection.class_name)
+        label_shapes.append(
+            make_yolo_label_shape(label, detection.points, detection.score)
+        )
+
+    if not hands and not product_detections and not sku_detections_all and not hand_detections:
+        raise ValueError("手部与商品 YOLO 均无检测结果。")
+
+    # 与 json 模式「无商品锚点、仅有手」一致：只纳入与手相交的商品 YOLO 框。
+    product_units: List[ProductUnit] = []
+    selected_indices: Set[int] = set()
+    if hands:
+        product_units, selected_indices, _unmatched = select_handheld_geometry(
+            anchors=[],
+            hands=hands,
+            auxiliary=[],
+            detections=product_detections,
+            width=width,
+            height=height,
+            min_iou=args.min_match_iou,
+            min_overlap=args.min_match_overlap,
+            hand_expand_ratio=args.hand_expand_ratio,
+            include_hand_matched=True,
+            max_area_ratio=float(args.max_match_area_ratio),
+            include_nearby_hands=args.include_nearby_hands,
+            hand_near_expand_ratio=float(args.hand_near_expand_ratio),
+            hand_max_center_dist_ratio=float(args.hand_max_center_dist_ratio),
+        )
+
+    rect_shapes: List[Dict[str, Any]] = []
+    if product_units:
+        sized_rects = build_sized_min_rectangles(
+            product_units,
+            hands if args.include_nearby_hands else [],
+            width=width,
+            height=height,
+            mode=args.rectangle_mode,
+            margin=max(0.0, float(args.margin)),
+            margin_ratio=max(0.0, float(args.margin_ratio)),
+            max_side_ratio=float(args.max_side_ratio),
+            include_contact_hands=bool(args.include_nearby_hands),
+            hand_near_expand_ratio=float(args.hand_near_expand_ratio),
+            hand_max_center_dist_ratio=float(args.hand_max_center_dist_ratio),
+        )
+        template = label_shapes[0] if label_shapes else None
+        rect_shapes = [
+            make_rectangle_shape(
+                rectangle, format_rect_label(args.rect_label, product_count), template
+            )
+            for rectangle, _policy, product_count in sized_rects
+        ]
+        for shape in rect_shapes:
+            shape["score"] = None
+    elif label_shapes:
+        # 有 YOLO 标签但无法确定手拿商品：仍写出检测标签，不追加最小外接矩形。
+        print(
+            f"[WARN] 无法生成最小外接矩形（无手或手旁无商品），仍写出 YOLO 标签："
+            f"{image_path.name}",
+            file=sys.stderr,
+        )
+
+    all_shapes = label_shapes + rect_shapes
+    if not label_shapes and not rect_shapes:
+        raise ValueError(
+            "手部与商品 YOLO 均无有效检测；为避免误标货架，本文件未写出标签。"
+        )
+
+    if not args.dry_run:
+        document = build_labelme_document(image_path, width, height, all_shapes)
+        json_path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(
+            json_path,
+            json.dumps(document, ensure_ascii=False, indent=2) + "\n",
+        )
+
+    return ProcessResult(
+        rectangle_added=len(rect_shapes),
+        skipped_existing=False,
+        anchor_count=0,
+        yolo_detection_count=len(product_detections),
+        selected_yolo_count=len(selected_indices),
+        labels_written=len(label_shapes),
     )
 
 
@@ -2029,6 +2279,14 @@ def validate_args(args: argparse.Namespace) -> None:
     weights = Path(args.weights).expanduser().resolve()
     if not weights.is_file():
         raise FileNotFoundError(f"YOLO 权重不存在：{weights}")
+    if args.label_source == "yolo":
+        hand_weights = Path(args.hand_weights).expanduser().resolve() if args.hand_weights else None
+        if hand_weights is None or not hand_weights.is_file():
+            raise FileNotFoundError(
+                "label_source=yolo 时必须提供有效的 --hand_weights（如 for_hands.pt）"
+            )
+        args.hand_weights = str(hand_weights)
+    args.weights = str(weights)
 
 
 def main() -> None:
@@ -2050,16 +2308,23 @@ def main() -> None:
 
     input_root = prepare_input_root(args)
     process_root = prepare_process_root(input_root, args)
+    from_yolo = args.label_source == "yolo"
     pairs = find_image_json_pairs(
-        process_root, args.image_dir_name, args.json_dir_name, image_extensions
+        process_root,
+        args.image_dir_name,
+        args.json_dir_name,
+        image_extensions,
+        require_json=not from_yolo,
     )
     if not pairs:
         raise RuntimeError(
-            "没有找到 images/json_labels 图片与同名 JSON 配对。"
-            f"root={process_root}"
+            "没有找到可处理的图片"
+            + ("（images 目录）" if from_yolo else "（images/json_labels 配对）")
+            + f"。root={process_root}"
         )
 
     print(f"[INFO] process_root: {process_root}")
+    print(f"[INFO] label_source: {args.label_source}")
     print(f"[INFO] image/json pairs: {len(pairs)}")
     print(f"[INFO] product_labels: {sorted(product_labels) if product_labels else '自动'}")
     print(f"[INFO] ignore_labels: {sorted(ignore_labels)}")
@@ -2081,10 +2346,15 @@ def main() -> None:
         f"device={args.device}, rectangle_mode={args.rectangle_mode}, "
         f"margin={args.margin}, margin_ratio={args.margin_ratio}"
     )
-    model = load_yolo_model(args.weights)
+    sku_model = load_yolo_model(args.weights)
+    hand_model = load_yolo_model(args.hand_weights) if from_yolo else None
+    if from_yolo:
+        print(f"[INFO] hand_weights: {args.hand_weights}")
+        print(f"[INFO] sku_weights: {args.weights}")
 
     added = 0
     selected_yolo_total = 0
+    labels_written_total = 0
     skipped_existing = 0
     failures: List[str] = []
     started_at = time.time()
@@ -2093,20 +2363,33 @@ def main() -> None:
 
     for index, (image_path, json_path) in enumerate(pairs, 1):
         try:
-            result = process_one(
-                model,
-                image_path,
-                json_path,
-                args,
-                product_labels,
-                ignore_labels,
-                hand_labels,
-                auxiliary_labels,
-                product_classes,
-                ignore_yolo_class_names,
-            )
+            if from_yolo:
+                assert hand_model is not None
+                result = process_one_from_yolo(
+                    hand_model,
+                    sku_model,
+                    image_path,
+                    json_path,
+                    args,
+                    product_classes,
+                    ignore_yolo_class_names,
+                )
+            else:
+                result = process_one(
+                    sku_model,
+                    image_path,
+                    json_path,
+                    args,
+                    product_labels,
+                    ignore_labels,
+                    hand_labels,
+                    auxiliary_labels,
+                    product_classes,
+                    ignore_yolo_class_names,
+                )
             added += result.rectangle_added
             selected_yolo_total += result.selected_yolo_count
+            labels_written_total += result.labels_written
             if result.skipped_existing:
                 skipped_existing += 1
         except Exception as exc:
@@ -2140,9 +2423,11 @@ def main() -> None:
                     "elapsed_s": round(elapsed, 1),
                     "rectangles_added": added,
                     "selected_yolo_detections": selected_yolo_total,
+                    "labels_written": labels_written_total,
                     "skipped_existing": skipped_existing,
                     "errors": len(failures),
                     "finished": index == len(pairs),
+                    "label_source": args.label_source,
                     "last_json": str(json_path),
                     "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                 },
@@ -2159,8 +2444,9 @@ def main() -> None:
     print("=" * 80)
     print(
         f"完成。配对数={len(pairs)}；新增最小外接矩形={added}；"
-        f"纳入 YOLO 商品框={selected_yolo_total}；跳过已有={skipped_existing}；"
-        f"失败={len(failures)}"
+        f"纳入 YOLO 商品框={selected_yolo_total}；"
+        f"写出检测标签={labels_written_total}；"
+        f"跳过已有={skipped_existing}；失败={len(failures)}"
     )
     if args.dry_run:
         print("dry-run：没有写入 JSON。")

@@ -6,6 +6,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # 只需按实际情况修改/覆盖下面几个路径；本脚本不会创建虚拟环境。
 DATASET_ROOT="${DATASET_ROOT:-/home/data_manager/DataPipes/Yolo_Detetcion_Datapipe/Storage/data/labeled/basic_hand/simple/2025_year_hand/08_month/train/train_split1}"
 WEIGHTS="${WEIGHTS:-/home/data_manager/jiangfan/for_skus.pt}"
+# 无现成 JSON 时设 LABEL_SOURCE=yolo，并指定手部权重。
+HAND_WEIGHTS="${HAND_WEIGHTS:-/home/data_manager/jiangfan/for_hands.pt}"
+LABEL_SOURCE="${LABEL_SOURCE:-json}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-/home/data_manager/jiangfan/test}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 
@@ -16,7 +19,7 @@ CONF="${CONF:-0.25}"
 IOU="${IOU:-0.70}"
 PRODUCT_CLASSES="${PRODUCT_CLASSES:-}"
 PRODUCT_LABELS="${PRODUCT_LABELS:-罐装,瓶装,袋装,盒装,桶装,条装,未定义包装,严重遮挡,过于模糊}"
-IGNORE_LABELS="${IGNORE_LABELS:-手,头,售货柜,最小外接矩形}"
+IGNORE_LABELS="${IGNORE_LABELS:-手,头,售货柜,手机,信息不足,最小外接矩形}"
 HAND_LABELS="${HAND_LABELS:-手}"
 AUXILIARY_LABELS="${AUXILIARY_LABELS:-遮挡}"
 IGNORE_YOLO_CLASS_NAMES="${IGNORE_YOLO_CLASS_NAMES:-vending_machine,phone,too_blurry,insufficient_info}"
@@ -64,6 +67,11 @@ run_job() {
     echo "请设置：export WEIGHTS=/你的/商品模型/best.pt" >&2
     exit 1
   fi
+  if [[ "$LABEL_SOURCE" == "yolo" && ! -f "$HAND_WEIGHTS" ]]; then
+    echo "[ERROR] LABEL_SOURCE=yolo 时手部 YOLO 权重不存在：$HAND_WEIGHTS" >&2
+    echo "请设置：export HAND_WEIGHTS=/你的/手部模型/for_hands.pt" >&2
+    exit 1
+  fi
 
   export CUDA_DEVICE_ORDER=PCI_BUS_ID
   local py_device
@@ -83,6 +91,7 @@ run_job() {
   local args=(
     --dataset_root "$DATASET_ROOT"
     --weights "$WEIGHTS"
+    --label_source "$LABEL_SOURCE"
     --output_root "$OUTPUT_ROOT"
     --device "$py_device"
     --imgsz "$IMGSZ"
@@ -109,6 +118,9 @@ run_job() {
     --progress_every "$PROGRESS_EVERY"
     --status_file "$STATUS_FILE"
   )
+  if [[ "$LABEL_SOURCE" == "yolo" ]]; then
+    args+=(--hand_weights "$HAND_WEIGHTS")
+  fi
   if [[ "$INCLUDE_NEARBY_HANDS" == "1" ]]; then
     args+=(--include_nearby_hands)
   else
@@ -129,7 +141,11 @@ run_job() {
   echo "================================================================================"
   echo "Python：         $($PYTHON_BIN -c 'import sys; print(sys.executable)')"
   echo "数据集：         $DATASET_ROOT"
+  echo "标注来源：       $LABEL_SOURCE"
   echo "商品模型：       $WEIGHTS"
+  if [[ "$LABEL_SOURCE" == "yolo" ]]; then
+    echo "手部模型：       $HAND_WEIGHTS"
+  fi
   echo "输出目录：       $OUTPUT_ROOT"
   echo "物理显卡：       $DEVICE"
   echo "推理 device：    $py_device"
@@ -156,6 +172,8 @@ if [[ "$DETACH" == "1" && "${MIN_RECT_CHILD:-}" != "1" ]]; then
     MIN_RECT_CHILD=1 \
     DATASET_ROOT="$DATASET_ROOT" \
     WEIGHTS="$WEIGHTS" \
+    HAND_WEIGHTS="$HAND_WEIGHTS" \
+    LABEL_SOURCE="$LABEL_SOURCE" \
     OUTPUT_ROOT="$OUTPUT_ROOT" \
     PYTHON_BIN="$PYTHON_BIN" \
     DEVICE="$DEVICE" \

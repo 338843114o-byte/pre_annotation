@@ -2082,7 +2082,7 @@ def process_one_from_yolo(
     """
     无现成 JSON：手/商品 YOLO 检测写出 LabelMe 标签后，再调用 process_one。
 
-    最小外接矩形逻辑与 json 模式完全相同；唯一差异是 shapes 来自 YOLO 而非人工标注。
+    与 json 模式共用同一套最小外接矩形逻辑；商品锚点已来自 YOLO，故关闭手旁补检。
     """
     if json_path.is_file():
         existing_data = json.loads(json_path.read_text(encoding="utf-8"))
@@ -2123,6 +2123,10 @@ def process_one_from_yolo(
     document = build_labelme_document(image_path, width, height, label_shapes)
     label_text = json.dumps(document, ensure_ascii=False, indent=2) + "\n"
 
+    # YOLO 已写出全部商品锚点，手旁补检无必要（避免二次拉框）。
+    process_args = copy.copy(args)
+    process_args.include_hand_matched_detections = False
+
     # dry-run：标签写入临时文件供 process_one 读取，不落盘到目标路径。
     temp_json: Optional[Path] = None
     process_json_path = json_path
@@ -2141,7 +2145,7 @@ def process_one_from_yolo(
             sku_model,
             image_path,
             process_json_path,
-            args,
+            process_args,
             product_labels,
             ignore_labels,
             hand_labels,

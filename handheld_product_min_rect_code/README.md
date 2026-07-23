@@ -23,7 +23,7 @@
 1. 递归查找 `images/` 下图片；可自动创建同级 `json_labels/`。
 2. `for_hands.pt` 检测手；`for_skus.pt` 检测商品/售货柜等。
 3. 将全部检测映射为中文 LabelMe label 并写出同名 JSON（含 score）。
-4. 调用与 json 模式相同的流程：把刚写出的 shapes 当作商品锚点/手/售货柜等，再用商品 YOLO 匹配细化并追加最小外接矩形。
+4. 调用与 json 模式相同的流程生成最小外接矩形；因商品锚点已来自 YOLO，**关闭手旁补检**。
 
 类名映射示例：`bottle→瓶装`、`can→罐装`、`hand→手`、`vending_machine→售货柜`、`undefined_pack→未定义包装`、`occluded→严重遮挡`。
 

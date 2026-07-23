@@ -104,7 +104,7 @@ python add_handheld_product_min_rect.py \
 
 json 模式：图片与 JSON 必须同名。yolo 模式：只需 `images/`。
 
-## 4.1 从视频 URL 抽帧再衔接
+## 4.1 从视频 URL / URL 列表抽帧再衔接
 
 ```bash
 cd /脚本目录/handheld_product_min_rect_code
@@ -116,7 +116,26 @@ python video_url_to_frames.py \
   --fps 2 \
   --overwrite
 
-# 抽帧后立刻跑 YOLO 最小外接矩形
+# 三种列表文件（与 jiangfan/vedio_url 一致）
+python video_url_to_frames.py \
+  --url_file /home/data_manager/jiangfan/vedio_url/一行一个URL.txt \
+  --output_root /home/data_manager/jiangfan/video_frames_ds \
+  --video_role main \
+  --fps 2 \
+  --overwrite
+
+python video_url_to_frames.py \
+  --url_file /home/data_manager/jiangfan/vedio_url/一行一个URL.xlsx \
+  --output_root /home/data_manager/jiangfan/video_frames_ds \
+  --overwrite
+
+python video_url_to_frames.py \
+  --url_file /home/data_manager/jiangfan/vedio_url/重叠订单_查询结果.xlsx \
+  --output_root /home/data_manager/jiangfan/video_frames_ds \
+  --video_role all \
+  --overwrite
+
+# 抽帧后立刻跑 YOLO 最小外接矩形（单视频或 --flat_output）
 python video_url_to_frames.py \
   --video_url 'https://example.com/a.mp4' \
   --output_root /home/data_manager/jiangfan/video_frames_ds \
@@ -129,8 +148,8 @@ python video_url_to_frames.py \
   --device 0
 ```
 
-常用抽帧参数：`--every_n 5`（每 5 帧取 1）、`--fps 2`、`--max_frames 200`、`--start_sec 10 --end_sec 60`。
-本地视频也可：`--video_url /path/to/local.mp4`。
+常用抽帧参数：`--every_n 5`、`--fps 2`、`--max_frames 200`、`--start_sec`/`--end_sec`、`--video_role main|sub|all`、`--max_videos`。
+本地视频也可：`--video_url /path/to/local.mp4`。批量默认写入 `output_root/<job_name>/images/`。
 
 ## 5. 直接运行（有 JSON）
 

@@ -16,13 +16,14 @@
 
 ## 2. 无 JSON 模式（label_source=yolo）
 
+与 json 模式的**唯一差异**是标注来源：用 YOLO 检测结果写出 LabelMe JSON，再对该 JSON 走完全相同的最小外接矩形逻辑（`process_one`）。
+
 流程：
 
 1. 递归查找 `images/` 下图片；可自动创建同级 `json_labels/`。
 2. `for_hands.pt` 检测手；`for_skus.pt` 检测商品/售货柜等。
-3. **保留全部 YOLO 检测**，映射为中文 LabelMe label 并写出同名 JSON（含 score）。
-4. 最小外接矩形逻辑与「JSON 无商品锚点、仅有手」一致：只纳入与手相交的商品框，**不会**把货架上未与手关联的 SKU 全部框进去。
-5. 有手但手旁无商品、或完全无手时：仍写出 YOLO 标签，但不追加最小外接矩形（并打 WARN）。
+3. 将全部检测映射为中文 LabelMe label 并写出同名 JSON（含 score）。
+4. 调用与 json 模式相同的流程：把刚写出的 shapes 当作商品锚点/手/售货柜等，再用商品 YOLO 匹配细化并追加最小外接矩形。
 
 类名映射示例：`bottle→瓶装`、`can→罐装`、`hand→手`、`vending_machine→售货柜`、`undefined_pack→未定义包装`、`occluded→严重遮挡`。
 
@@ -146,8 +147,7 @@ export HAND_EXPAND_RATIO=0.15
 
 ## 9. 无新增最小外接矩形时的排查
 
-- 日志提示“既没有商品锚点，也没有手部标注”：设置正确的 `PRODUCT_LABELS`，或检查 JSON 的 `label` 名称。
-- yolo 模式 WARN「无法生成最小外接矩形」：检查手数模是否检出到手，以及手旁是否有商品框。
+- 日志提示“既没有商品锚点，也没有手部标注”：设置正确的 `PRODUCT_LABELS`，或检查 JSON / YOLO 写出的 `label` 名称。
 - YOLO 模型还含非商品类别：设置 `PRODUCT_CLASSES` / `IGNORE_YOLO_CLASS_NAMES`。
 - 商品框与 JSON 锚点偏差很大：适当降低 `MIN_MATCH_IOU` 或 `MIN_MATCH_OVERLAP`。
 - JSON 中手部与商品相距较远：适当增大 `HAND_EXPAND_RATIO`，但过大可能引入货架商品。

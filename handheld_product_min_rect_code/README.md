@@ -91,18 +91,20 @@ python add_handheld_product_min_rect.py \
 
 ## 4. 数据目录要求
 
+输入与最终输出均采用与 `jiangfan/1` 相同的标准布局（`output_root` 只会包含这两项）：
+
 ```text
 数据集根目录/
-└── 任意子目录/
-    ├── images/
-    │   ├── a.jpg
-    │   └── b.jpg
-    └── json_labels/          # yolo 模式可缺失，脚本会创建
-        ├── a.json
-        └── b.json
+├── images/
+│   ├── a.jpg
+│   └── b.jpg
+└── json_labels/          # yolo 模式可缺失，脚本会创建
+    ├── a.json
+    └── b.json
 ```
 
 json 模式：图片与 JSON 必须同名。yolo 模式：只需 `images/`。
+脚本复制到 `output_root` 时不会带入校验报告、viz、meta 等旁路文件。
 
 ## 4.1 从视频 URL / URL 列表抽帧再衔接
 

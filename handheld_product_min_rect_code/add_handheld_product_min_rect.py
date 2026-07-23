@@ -31,6 +31,7 @@ import copy
 import json
 import math
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -785,6 +786,7 @@ def build_labelme_document(
     height: int,
     shapes: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
+    # 字段顺序与常见 LabelMe / 真值目录（如 jiangfan/1）保持一致。
     return {
         "version": "3.3.1",
         "flags": {},
@@ -793,6 +795,7 @@ def build_labelme_document(
         "imageData": None,
         "imageHeight": int(height),
         "imageWidth": int(width),
+        "description": "",
     }
 
 
@@ -1977,6 +1980,89 @@ def prepare_input_root(args: argparse.Namespace) -> Path:
     return root
 
 
+def _unique_name(directory: Path, filename: str) -> str:
+    candidate = directory / filename
+    if not candidate.exists():
+        return filename
+    stem = Path(filename).stem
+    suffix = Path(filename).suffix
+    index = 2
+    while True:
+        name = f"{stem}_{index}{suffix}"
+        if not (directory / name).exists():
+            return name
+        index += 1
+
+
+def copy_standard_dataset_layout(
+    input_root: Path,
+    output_root: Path,
+    image_dir_name: str,
+    json_dir_name: str,
+    image_extensions: Set[str],
+) -> None:
+    """
+    将输入整理为与 jiangfan/1 一致的标准布局：
+
+      output_root/
+      ├── images/
+      └── json_labels/
+
+    只复制这两个目录（及其图片/JSON 文件），不带入校验报告、viz、meta 等旁路文件。
+    若输入缺少顶层 images/ 但存在嵌套 */images/，则展平写入顶层 images/。
+    """
+    out_images = output_root / image_dir_name
+    out_json = output_root / json_dir_name
+    out_images.mkdir(parents=True, exist_ok=True)
+    out_json.mkdir(parents=True, exist_ok=True)
+
+    top_images = input_root / image_dir_name
+    top_json = input_root / json_dir_name
+
+    if top_images.is_dir():
+        for path in sorted(top_images.iterdir()):
+            if path.is_file() and path.suffix.lower() in image_extensions:
+                shutil.copy2(path, out_images / path.name)
+        if top_json.is_dir():
+            for path in sorted(top_json.iterdir()):
+                if path.is_file() and path.suffix.lower() == ".json":
+                    shutil.copy2(path, out_json / path.name)
+        return
+
+    nested_image_dirs = sorted(
+        path
+        for path in input_root.rglob(image_dir_name)
+        if path.is_dir() and path.name == image_dir_name
+    )
+    if not nested_image_dirs:
+        raise FileNotFoundError(
+            f"输入中未找到 {image_dir_name}/ 目录：{input_root}"
+        )
+
+    for image_dir in nested_image_dirs:
+        parent = image_dir.parent
+        try:
+            rel = parent.relative_to(input_root)
+        except ValueError:
+            continue
+        prefix = ""
+        if str(rel) != ".":
+            prefix = (
+                re.sub(r"[^\w.\-]+", "_", str(rel).replace("\\", "_"), flags=re.UNICODE)
+                .strip("._")
+                + "_"
+            )
+        json_dir = parent / json_dir_name
+        for image_path in sorted(image_dir.iterdir()):
+            if not image_path.is_file() or image_path.suffix.lower() not in image_extensions:
+                continue
+            dest_name = _unique_name(out_images, f"{prefix}{image_path.name}")
+            shutil.copy2(image_path, out_images / dest_name)
+            src_json = json_dir / f"{image_path.stem}.json"
+            if src_json.is_file():
+                shutil.copy2(src_json, out_json / f"{Path(dest_name).stem}.json")
+
+
 def prepare_process_root(input_root: Path, args: argparse.Namespace) -> Path:
     if not args.output_root:
         return input_root
@@ -2002,9 +2088,25 @@ def prepare_process_root(input_root: Path, args: argparse.Namespace) -> Path:
             raise FileExistsError(
                 f"output_root 已存在：{output_root}；继续处理加 --resume，覆盖加 --overwrite"
             )
-    print(f"[INFO] 正在完整复制数据集到 {output_root} ...")
-    shutil.copytree(input_root, output_root)
-    print("[INFO] 数据集复制完成；输入目录不会被修改。")
+
+    image_extensions = {
+        extension.strip().lower()
+        for extension in args.image_exts.split(",")
+        if extension.strip()
+    }
+    print(
+        f"[INFO] 正在按标准布局复制到 {output_root} "
+        f"（仅 {args.image_dir_name}/ + {args.json_dir_name}/）..."
+    )
+    output_root.mkdir(parents=True, exist_ok=True)
+    copy_standard_dataset_layout(
+        input_root,
+        output_root,
+        args.image_dir_name,
+        args.json_dir_name,
+        image_extensions,
+    )
+    print("[INFO] 数据集复制完成；输出布局与 jiangfan/1 一致；输入目录不会被修改。")
     return output_root
 
 
@@ -2017,9 +2119,16 @@ def find_image_json_pairs(
     require_json: bool = True,
 ) -> List[Tuple[Path, Path]]:
     pairs: List[Tuple[Path, Path]] = []
-    image_dirs = sorted(
-        path for path in root.rglob(image_dir_name) if path.is_dir() and path.name == image_dir_name
-    )
+    # 优先只使用顶层 images/（与 jiangfan/1 一致）；没有顶层时再回退 rglob。
+    top_image_dir = root / image_dir_name
+    if top_image_dir.is_dir():
+        image_dirs = [top_image_dir]
+    else:
+        image_dirs = sorted(
+            path
+            for path in root.rglob(image_dir_name)
+            if path.is_dir() and path.name == image_dir_name
+        )
     for image_dir in image_dirs:
         json_dir = image_dir.parent / json_dir_name
         if require_json and not json_dir.is_dir():
@@ -2361,7 +2470,14 @@ def process_one_from_yolo(
     )
 
 
-def make_zip_from_dir(source_dir: Path, output_zip: Path, overwrite: bool) -> None:
+def make_zip_from_dir(
+    source_dir: Path,
+    output_zip: Path,
+    overwrite: bool,
+    *,
+    image_dir_name: str = "images",
+    json_dir_name: str = "json_labels",
+) -> None:
     output_zip = output_zip.expanduser().resolve()
     if output_zip.exists():
         if overwrite:
@@ -2369,10 +2485,16 @@ def make_zip_from_dir(source_dir: Path, output_zip: Path, overwrite: bool) -> No
         else:
             raise FileExistsError(f"output_zip 已存在：{output_zip}；覆盖请加 --overwrite")
     output_zip.parent.mkdir(parents=True, exist_ok=True)
+    # zip 内容同样只打包标准布局，避免混入旁路文件。
+    include_dirs = {image_dir_name, json_dir_name}
     with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for path in sorted(source_dir.rglob("*")):
-            if path.is_file() and path.resolve() != output_zip:
-                archive.write(path, path.relative_to(source_dir))
+            if not path.is_file() or path.resolve() == output_zip:
+                continue
+            rel = path.relative_to(source_dir)
+            if not rel.parts or rel.parts[0] not in include_dirs:
+                continue
+            archive.write(path, rel)
 
 
 def write_status_file(path: Optional[Path], payload: Dict[str, Any]) -> None:
@@ -2600,7 +2722,13 @@ def main() -> None:
         for failure in failures[:20]:
             print(f"  - {failure}", file=sys.stderr)
     elif args.output_zip:
-        make_zip_from_dir(process_root, Path(args.output_zip), args.overwrite)
+        make_zip_from_dir(
+            process_root,
+            Path(args.output_zip),
+            args.overwrite,
+            image_dir_name=args.image_dir_name,
+            json_dir_name=args.json_dir_name,
+        )
         print(f"[INFO] output_zip: {Path(args.output_zip).expanduser().resolve()}")
 
     print("=" * 80)

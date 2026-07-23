@@ -29,13 +29,14 @@ cat <<'EOF'
    export VIDEO_URL_FILE=/home/data_manager/jiangfan/vedio_url/一行一个URL.txt
    # export VIDEO_URL_FILE=/home/data_manager/jiangfan/vedio_url/一行一个URL.xlsx
    # export VIDEO_URL_FILE=/home/data_manager/jiangfan/vedio_url/重叠订单_查询结果.xlsx
+   # 批量默认合并到同一 images/（与 jiangfan/1 布局一致）；FLAT_OUTPUT=0 可改为子目录
    export VIDEO_ROLE=main          # all|main|sub
    export MAX_VIDEOS=2             # 试跑可限条数；0=不限制
    export FRAMES_ROOT=/home/data_manager/jiangfan/video_frames_ds
    export FRAMES_OVERWRITE=1
    export FPS=2
    bash run_video.sh
-   # 批量默认每个视频一个子目录；FLAT_OUTPUT=1 可合并到同一 images/
+   # 默认 FLAT_OUTPUT=1；最终 OUTPUT_ROOT 仅为 images/ + json_labels/
 
 2) 已有图片 → 最小外接矩形
    bash run_images.sh

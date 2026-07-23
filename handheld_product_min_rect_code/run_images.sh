@@ -27,13 +27,16 @@ run_images_job() {
     echo "================================================================================"
     echo "步骤：覆盖校验（同一结果 JSON：手持商品 vs 最小外接矩形）"
     echo "================================================================================"
+    # 校验报告写到旁路目录，保持 OUTPUT_ROOT 仅含 images/ + json_labels/
+    local report_dir="${OUTPUT_ROOT}_validation"
+    mkdir -p "$report_dir"
     local validate_args=(
       --result_root "$OUTPUT_ROOT"
       --product_labels "$PRODUCT_LABELS"
       --rect_label "$RECT_LABEL"
       --coverage_threshold "$VALIDATE_COVERAGE"
-      --report_json "${OUTPUT_ROOT}/validation_uncovered.json"
-      --report_txt "${OUTPUT_ROOT}/validation_uncovered.txt"
+      --report_json "${report_dir}/validation_uncovered.json"
+      --report_txt "${report_dir}/validation_uncovered.txt"
     )
     set +e
     "$PYTHON_BIN" "${SCRIPT_DIR}/validate_gt_min_rect_coverage.py" "${validate_args[@]}"
@@ -41,7 +44,7 @@ run_images_job() {
     set -e
     if [[ "$validate_rc" -eq 1 ]]; then
       echo "[WARN] 存在未被最小外接矩形覆盖的手持商品，详见："
-      echo "  ${OUTPUT_ROOT}/validation_uncovered.txt"
+      echo "  ${report_dir}/validation_uncovered.txt"
     elif [[ "$validate_rc" -ne 0 ]]; then
       echo "[ERROR] 校验脚本失败，exit=$validate_rc" >&2
       exit "$validate_rc"

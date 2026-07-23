@@ -6,11 +6,11 @@
 
 两种标注来源（--label_source）：
 - json（默认）：沿用图片同名 JSON 的已有标注 + 商品 YOLO 细化/手旁补检。
-- yolo：无现成 JSON 时，用 --hand_weights + --weights 先检测并写出 LabelMe
-  JSON（手/商品/售货柜等），再对该 JSON 走与 json 模式完全相同的最小外接矩形逻辑。
-  唯一差异是标注来源从人工 JSON 换成 YOLO 检测框。
+- yolo：用 --hand_weights + --weights 检测并计算最小外接矩形。
+  - 若图片已有真值 JSON：不覆盖原标注，只把最小外接矩形追加到真值 JSON。
+  - 若没有真值 JSON：先写出 YOLO 检测 LabelMe JSON，再追加最小外接矩形。
 
-核心保证（json 模式；yolo 模式在写出检测标签后同样适用）：
+核心保证（json 模式；以及 yolo 模式追加到真值 JSON 时同样适用）：
 1. 原 JSON 顶层字段、原 shapes 内容和顺序完全不变。
 2. 只在 shapes 数组末尾追加一个或多个 label=“最小外接矩形_N”的 shape。
 3. 新 shape 沿用原 JSON 的字段结构；不写入模型路径、类别编号等额外元数据。
@@ -21,6 +21,7 @@
   商品标注锚点；也可用 --product_labels 明确指定。
 - 每个 JSON 商品锚点可匹配一个 YOLO 框细化边界；漏检时仍保留 JSON 框。
 - JSON 有“手”时，仅对「尚未与任何 JSON 商品重叠的手」做 YOLO 补检。
+- yolo 模式计算几何时以 YOLO 检测为商品锚点（重叠去重），并关闭手旁补检。
 """
 
 from __future__ import annotations
@@ -44,12 +45,13 @@ import numpy as np
 
 
 IMAGE_EXTS_DEFAULT = ".jpg,.jpeg,.png,.bmp,.webp"
-DEFAULT_IGNORE_LABELS = "手,头,售货柜,手机,信息不足,最小外接矩形"
+DEFAULT_IGNORE_LABELS = "手,头,售货柜,手机,最小外接矩形"
 DEFAULT_HAND_LABELS = "手"
 DEFAULT_AUXILIARY_LABELS = "遮挡"
 # for_skus.pt 等模型里这些类别不是手上商品，默认排除。
+# 信息不足 / insufficient_info 参与最小外接矩形，不在此排除。
 DEFAULT_IGNORE_YOLO_CLASS_NAMES = (
-    "vending_machine,phone,too_blurry,insufficient_info"
+    "vending_machine,phone,too_blurry"
 )
 # YOLO 英文类名 → LabelMe 中文 label（用于 --label_source yolo 写盘）。
 YOLO_CLASS_TO_JSON_LABEL: Dict[str, str] = {
@@ -669,6 +671,93 @@ def yolo_class_to_json_label(class_name: str) -> str:
     return key
 
 
+def shape_is_product_anchor(
+    label: str,
+    *,
+    product_labels: Set[str],
+    ignore_labels: Set[str],
+    hand_labels: Set[str],
+    auxiliary_labels: Set[str],
+    rect_label: str,
+) -> bool:
+    """判断 shape 是否应作为手拿商品锚点参与最小外接矩形。"""
+    text = str(label).strip()
+    if not text:
+        return False
+    if text in hand_labels or text in auxiliary_labels:
+        return False
+    if is_rect_label(text, rect_label):
+        return False
+    if text in ignore_labels:
+        return False
+    if product_labels:
+        return label_matches(text, product_labels)
+    return True
+
+
+def dedupe_overlapping_product_shapes(
+    shapes: Sequence[Dict[str, Any]],
+    *,
+    product_labels: Set[str],
+    ignore_labels: Set[str],
+    hand_labels: Set[str],
+    auxiliary_labels: Set[str],
+    rect_label: str,
+    min_iou: float,
+    min_overlap: float,
+    max_area_ratio: float,
+) -> List[Dict[str, Any]]:
+    """
+    对商品锚点做重叠去重：高度重叠的多检只保留 score 更高的一个。
+    手/售货柜等非商品 shape 原样保留。
+    """
+    products: List[Dict[str, Any]] = []
+    others: List[Dict[str, Any]] = []
+    for shape in shapes:
+        if not isinstance(shape, dict):
+            continue
+        label = str(shape.get("label", "")).strip()
+        if shape_is_product_anchor(
+            label,
+            product_labels=product_labels,
+            ignore_labels=ignore_labels,
+            hand_labels=hand_labels,
+            auxiliary_labels=auxiliary_labels,
+            rect_label=rect_label,
+        ):
+            products.append(shape)
+        else:
+            others.append(shape)
+
+    products_sorted = sorted(
+        products,
+        key=lambda item: float(item.get("score") or 0.0),
+        reverse=True,
+    )
+    kept: List[Dict[str, Any]] = []
+    for shape in products_sorted:
+        points = shape.get("points") or []
+        if len(points) < 2:
+            continue
+        duplicate = False
+        for kept_shape in kept:
+            match = compare_polygons(
+                points,
+                kept_shape.get("points") or [],
+                min_iou=min_iou,
+                min_overlap=min_overlap,
+                max_area_ratio=max_area_ratio,
+            )
+            if match.matched:
+                duplicate = True
+                break
+        if not duplicate:
+            kept.append(shape)
+
+    # 非商品在前、去重后商品在后，便于阅读；顺序不影响几何。
+    return list(others) + kept
+
+
 def make_yolo_label_shape(
     label: str,
     points: List[List[float]],
@@ -1122,6 +1211,7 @@ VIZ_LABEL_ALIASES: Dict[str, str] = {
     "未定义包装": "undefined",
     "严重遮挡": "occluded",
     "过于模糊": "too_blurry",
+    "信息不足": "insufficient_info",
     "遮挡": "occluded_soft",
     "手": "hand",
     "头": "head",
@@ -2080,22 +2170,29 @@ def process_one_from_yolo(
     ignore_yolo_class_names: Set[str],
 ) -> ProcessResult:
     """
-    无现成 JSON：手/商品 YOLO 检测写出 LabelMe 标签后，再调用 process_one。
+    YOLO 检测并生成最小外接矩形。
 
-    与 json 模式共用同一套最小外接矩形逻辑；商品锚点已来自 YOLO，故关闭手旁补检。
+    - 已有真值 JSON：保留原 shapes，只追加最小外接矩形（不写 YOLO 新标注）。
+    - 无真值 JSON：写出 YOLO 检测标签，再追加最小外接矩形。
+    商品锚点来自 YOLO（重叠去重），关闭手旁补检。
     """
+    has_gt_json = False
+    gt_text = ""
+    gt_data: Dict[str, Any] = {}
     if json_path.is_file():
-        existing_data = json.loads(json_path.read_text(encoding="utf-8"))
-        existing_shapes = existing_data.get("shapes") or []
-        existing_labels = {
-            str(shape.get("label", ""))
-            for shape in existing_shapes
-            if isinstance(shape, dict)
-        }
-        if args.skip_existing and any(
-            is_rect_label(label, args.rect_label) for label in existing_labels
-        ):
-            return ProcessResult(0, True, 0, 0, 0, labels_written=0)
+        gt_text, gt_data = load_json_text(json_path)
+        existing_shapes = gt_data.get("shapes")
+        if isinstance(existing_shapes, list) and len(existing_shapes) > 0:
+            has_gt_json = True
+            existing_labels = {
+                str(shape.get("label", ""))
+                for shape in existing_shapes
+                if isinstance(shape, dict)
+            }
+            if args.skip_existing and any(
+                is_rect_label(label, args.rect_label) for label in existing_labels
+            ):
+                return ProcessResult(0, True, 0, 0, 0, labels_written=0)
 
     width, height = get_image_size(image_path)
     hand_detections = predict_detections(
@@ -2118,51 +2215,148 @@ def process_one_from_yolo(
         )
 
     if not label_shapes:
-        raise ValueError("手部与商品 YOLO 均无检测结果，无法生成标注 JSON。")
+        raise ValueError("手部与商品 YOLO 均无检测结果，无法生成最小外接矩形。")
 
-    document = build_labelme_document(image_path, width, height, label_shapes)
-    label_text = json.dumps(document, ensure_ascii=False, indent=2) + "\n"
+    label_shapes = dedupe_overlapping_product_shapes(
+        label_shapes,
+        product_labels=product_labels,
+        ignore_labels=ignore_labels,
+        hand_labels=hand_labels,
+        auxiliary_labels=auxiliary_labels,
+        rect_label=args.rect_label,
+        min_iou=float(args.min_match_iou),
+        min_overlap=float(args.min_match_overlap),
+        max_area_ratio=float(args.max_match_area_ratio),
+    )
 
-    # YOLO 已写出全部商品锚点，手旁补检无必要（避免二次拉框）。
-    process_args = copy.copy(args)
-    process_args.include_hand_matched_detections = False
+    anchors: List[List[List[float]]] = []
+    hands: List[List[List[float]]] = []
+    for shape in label_shapes:
+        label = str(shape.get("label", "")).strip()
+        points = shape.get("points") or []
+        if len(points) < 2:
+            continue
+        poly = [[float(x), float(y)] for x, y in points]
+        if label in hand_labels:
+            hands.append(poly)
+        elif shape_is_product_anchor(
+            label,
+            product_labels=product_labels,
+            ignore_labels=ignore_labels,
+            hand_labels=hand_labels,
+            auxiliary_labels=auxiliary_labels,
+            rect_label=args.rect_label,
+        ):
+            anchors.append(poly)
 
-    # dry-run：标签写入临时文件供 process_one 读取，不落盘到目标路径。
-    temp_json: Optional[Path] = None
-    process_json_path = json_path
-    try:
-        if args.dry_run:
-            fd, temp_name = tempfile.mkstemp(suffix=".json", prefix="yolo_labels_")
-            os.close(fd)
-            temp_json = Path(temp_name)
-            atomic_write_text(temp_json, label_text)
-            process_json_path = temp_json
-        else:
-            json_path.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write_text(json_path, label_text)
-
-        result = process_one(
-            sku_model,
-            image_path,
-            process_json_path,
-            process_args,
-            product_labels,
-            ignore_labels,
-            hand_labels,
-            auxiliary_labels,
-            product_classes,
-            ignore_yolo_class_names,
+    if not anchors and not hands:
+        raise ValueError(
+            "YOLO 去重后既没有商品锚点也没有手部框，无法生成最小外接矩形。"
         )
-    finally:
-        if temp_json is not None and temp_json.exists():
-            temp_json.unlink()
 
+    # 保留参数以兼容调用方；几何已用 YOLO→label_shapes，不再二次 process_one。
+    del product_classes, ignore_yolo_class_names
+
+    # 锚点已是 YOLO 商品框；关闭手旁补检，仅对锚点做几何与聚类。
+    product_units, selected_indices, _unmatched = select_handheld_geometry(
+        anchors,
+        hands,
+        [],
+        detections=[],
+        width=width,
+        height=height,
+        min_iou=args.min_match_iou,
+        min_overlap=args.min_match_overlap,
+        hand_expand_ratio=args.hand_expand_ratio,
+        include_hand_matched=False,
+        max_area_ratio=float(args.max_match_area_ratio),
+        include_nearby_hands=args.include_nearby_hands,
+        hand_near_expand_ratio=float(args.hand_near_expand_ratio),
+        hand_max_center_dist_ratio=float(args.hand_max_center_dist_ratio),
+    )
+    if not product_units:
+        if anchors:
+            product_units = [[list(anchor)] for anchor in anchors]
+        else:
+            raise ValueError("没有得到任何手拿商品范围")
+
+    sized_rects = build_sized_min_rectangles(
+        product_units,
+        hands if args.include_nearby_hands else [],
+        width=width,
+        height=height,
+        mode=args.rectangle_mode,
+        margin=max(0.0, float(args.margin)),
+        margin_ratio=max(0.0, float(args.margin_ratio)),
+        max_side_ratio=float(args.max_side_ratio),
+        include_contact_hands=bool(args.include_nearby_hands),
+        hand_near_expand_ratio=float(args.hand_near_expand_ratio),
+        hand_max_center_dist_ratio=float(args.hand_max_center_dist_ratio),
+    )
+
+    if has_gt_json:
+        template_ignore = (
+            set(ignore_labels) | hand_labels | auxiliary_labels | {args.rect_label}
+        )
+        template = choose_shape_template(
+            gt_data.get("shapes") or [], product_labels, template_ignore
+        )
+        # 最小外接矩形在图片像素坐标系生成；追加到真值时缩放到 JSON 画布尺寸。
+        gt_w = int(gt_data.get("imageWidth") or width)
+        gt_h = int(gt_data.get("imageHeight") or height)
+        sx = float(gt_w) / float(width) if width else 1.0
+        sy = float(gt_h) / float(height) if height else 1.0
+        new_shapes = []
+        for rectangle, _policy, product_count in sized_rects:
+            if abs(sx - 1.0) > 1e-9 or abs(sy - 1.0) > 1e-9:
+                rectangle = [
+                    [float(x) * sx, float(y) * sy] for x, y in rectangle
+                ]
+            new_shapes.append(
+                make_rectangle_shape(
+                    rectangle,
+                    format_rect_label(args.rect_label, product_count),
+                    template,
+                )
+            )
+        if not args.dry_run:
+            updated_text = append_shapes_preserving_original_text(gt_text, new_shapes)
+            verify_only_shapes_appended(gt_data, updated_text, new_shapes)
+            json_path.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(json_path, updated_text)
+        return ProcessResult(
+            rectangle_added=len(new_shapes),
+            skipped_existing=False,
+            anchor_count=len(anchors),
+            yolo_detection_count=len(anchors),
+            selected_yolo_count=len(anchors),
+            labels_written=0,
+        )
+
+    # 无真值：写出 YOLO 标签 + 最小外接矩形。
+    template = label_shapes[0] if label_shapes else None
+    rect_shapes = [
+        make_rectangle_shape(
+            rectangle, format_rect_label(args.rect_label, product_count), template
+        )
+        for rectangle, _policy, product_count in sized_rects
+    ]
+    for shape in rect_shapes:
+        shape["score"] = None
+    all_shapes = label_shapes + rect_shapes
+    if not args.dry_run:
+        document = build_labelme_document(image_path, width, height, all_shapes)
+        json_path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(
+            json_path,
+            json.dumps(document, ensure_ascii=False, indent=2) + "\n",
+        )
     return ProcessResult(
-        rectangle_added=result.rectangle_added,
-        skipped_existing=result.skipped_existing,
-        anchor_count=result.anchor_count,
-        yolo_detection_count=result.yolo_detection_count,
-        selected_yolo_count=result.selected_yolo_count,
+        rectangle_added=len(rect_shapes),
+        skipped_existing=False,
+        anchor_count=len(anchors),
+        yolo_detection_count=len(anchors),
+        selected_yolo_count=len(selected_indices) if selected_indices else len(anchors),
         labels_written=len(label_shapes),
     )
 

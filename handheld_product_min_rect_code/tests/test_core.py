@@ -34,6 +34,7 @@ from add_handheld_product_min_rect import (  # noqa: E402
     select_handheld_geometry,
     verify_only_shapes_appended,
     yolo_class_to_json_label,
+    dedupe_overlapping_product_shapes,
 )
 
 
@@ -804,6 +805,46 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(unmatched, 0)
         self.assertEqual(len(units), 1)
         self.assertEqual(selected, {0})
+
+    def test_dedupe_overlapping_product_shapes(self):
+        """重叠的未定义包装多检只保留高分框；手与售货柜保留。"""
+        shapes = [
+            {"label": "手", "points": box(10, 10, 40, 40), "score": 0.9},
+            {"label": "售货柜", "points": box(0, 0, 200, 50), "score": 0.8},
+            {
+                "label": "未定义包装",
+                "points": box(50, 50, 100, 120),
+                "score": 0.49,
+            },
+            {
+                "label": "未定义包装",
+                "points": box(55, 45, 105, 125),
+                "score": 0.39,
+            },
+            {"label": "瓶装", "points": box(180, 180, 220, 240), "score": 0.9},
+        ]
+        deduped = dedupe_overlapping_product_shapes(
+            shapes,
+            product_labels={"未定义包装", "瓶装", "信息不足"},
+            ignore_labels={"手", "售货柜", "最小外接矩形"},
+            hand_labels={"手"},
+            auxiliary_labels={"遮挡"},
+            rect_label="最小外接矩形",
+            min_iou=0.05,
+            min_overlap=0.20,
+            max_area_ratio=8.0,
+        )
+        product_labels = [
+            str(s["label"]) for s in deduped if s["label"] in {"未定义包装", "瓶装"}
+        ]
+        self.assertEqual(product_labels.count("未定义包装"), 1)
+        self.assertEqual(product_labels.count("瓶装"), 1)
+        kept_undefined = next(s for s in deduped if s["label"] == "未定义包装")
+        self.assertAlmostEqual(float(kept_undefined["score"]), 0.49)
+        self.assertEqual(
+            [s["label"] for s in deduped if s["label"] in {"手", "售货柜"}],
+            ["手", "售货柜"],
+        )
 
 
 if __name__ == "__main__":

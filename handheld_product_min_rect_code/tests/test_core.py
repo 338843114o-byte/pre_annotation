@@ -575,10 +575,67 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(is_rect_label("最小外接矩形_2", "最小外接矩形"))
         self.assertTrue(is_rect_label("最小外接矩形", "最小外接矩形"))
         self.assertFalse(is_rect_label("罐装_2", "最小外接矩形"))
+        self.assertFalse(
+            is_rect_label("最小外接矩形（仅物品）_2", "最小外接矩形")
+        )
+        self.assertTrue(
+            is_rect_label("最小外接矩形（仅物品）_2", "最小外接矩形（仅物品）")
+        )
+        self.assertEqual(
+            format_rect_label("最小外接矩形（仅物品）", count),
+            "最小外接矩形（仅物品）_2",
+        )
         self.assertEqual(viz_label_text("最小外接矩形_2"), "min_rect_2")
         self.assertEqual(viz_label_text("最小外接矩形_1"), "min_rect_1")
         self.assertEqual(viz_label_text("最小外接矩形"), "min_rect")
+        self.assertEqual(
+            viz_label_text("最小外接矩形（仅物品）_2"), "min_rect_item_2"
+        )
+        self.assertEqual(
+            viz_label_text("最小外接矩形（仅物品）"), "min_rect_item"
+        )
         self.assertEqual(viz_label_text("瓶装"), "bottle")
+
+    def test_product_only_rect_never_includes_hand(self):
+        """仅物品框：与含手路径同聚类，但矩形永不纳入手。"""
+        product = box(40, 40, 80, 100)
+        hand = box(50, 90, 110, 160)
+        with_hands = build_sized_min_rectangles(
+            [[product]],
+            [hand],
+            width=500,
+            height=500,
+            mode="axis_aligned",
+            margin=12,
+            margin_ratio=0,
+            max_side_ratio=0.5,
+            include_contact_hands=True,
+        )
+        product_only = build_sized_min_rectangles(
+            [[product]],
+            [hand],
+            width=500,
+            height=500,
+            mode="axis_aligned",
+            margin=12,
+            margin_ratio=0,
+            max_side_ratio=0.5,
+            include_contact_hands=False,
+        )
+        self.assertEqual(len(with_hands), 1)
+        self.assertEqual(len(product_only), 1)
+        rect_with, policy_with, count_with = with_hands[0]
+        rect_only, policy_only, count_only = product_only[0]
+        self.assertEqual(count_with, 1)
+        self.assertEqual(count_only, 1)
+        self.assertEqual(policy_with, "cluster_all")
+        self.assertEqual(policy_only, "cluster_products")
+        # 含手框应更大（手在商品下方外扩）
+        ys_with = [p[1] for p in rect_with]
+        ys_only = [p[1] for p in rect_only]
+        self.assertGreater(max(ys_with), max(ys_only))
+        # 仅物品框不应覆盖手底部
+        self.assertLess(max(ys_only), 160)
 
     def test_margin_keeps_rectangle_away_from_product(self):
         polygons = [box(40, 40, 80, 100)]

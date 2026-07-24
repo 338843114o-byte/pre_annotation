@@ -12,7 +12,8 @@
 
 核心保证（json 模式；以及 yolo 模式追加到真值 JSON 时同样适用）：
 1. 原 JSON 顶层字段、原 shapes 内容和顺序完全不变。
-2. 只在 shapes 数组末尾追加一个或多个 label=“最小外接矩形_N”的 shape。
+2. 只在 shapes 数组末尾追加一个或多个 label=“最小外接矩形_N”的 shape；
+   可选再追加“最小外接矩形（仅物品）_N”（永不纳入手，逻辑与前者一致）。
 3. 新 shape 沿用原 JSON 的字段结构；不写入模型路径、类别编号等额外元数据。
 4. 支持普通 YOLO 检测框和 YOLO OBB 旋转框。
 
@@ -46,9 +47,14 @@ import numpy as np
 
 
 IMAGE_EXTS_DEFAULT = ".jpg,.jpeg,.png,.bmp,.webp"
-DEFAULT_IGNORE_LABELS = "手,头,售货柜,手机,最小外接矩形"
+DEFAULT_RECT_LABEL = "最小外接矩形"
+DEFAULT_PRODUCT_ONLY_RECT_LABEL = "最小外接矩形（仅物品）"
+DEFAULT_IGNORE_LABELS = (
+    f"手,头,售货柜,手机,{DEFAULT_RECT_LABEL},{DEFAULT_PRODUCT_ONLY_RECT_LABEL}"
+)
 DEFAULT_HAND_LABELS = "手"
 DEFAULT_AUXILIARY_LABELS = "遮挡"
+DEFAULT_ADD_PRODUCT_ONLY_RECT = True
 # for_skus.pt 等模型里这些类别不是手上商品，默认排除。
 # 信息不足 / insufficient_info 参与最小外接矩形，不在此排除。
 DEFAULT_IGNORE_YOLO_CLASS_NAMES = (
@@ -115,6 +121,7 @@ class ProcessResult:
     yolo_detection_count: int
     selected_yolo_count: int
     labels_written: int = 0
+    no_detection: bool = False
 
 
 def parse_args() -> argparse.Namespace:
@@ -322,14 +329,32 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--rect_label",
         type=str,
-        default="最小外接矩形",
+        default=DEFAULT_RECT_LABEL,
         help="新增 shape 的 label 基础名；实际写入为「基础名_手持商品数」，如 最小外接矩形_2。",
+    )
+    parser.add_argument(
+        "--add_product_only_rect",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULT_ADD_PRODUCT_ONLY_RECT,
+        help=(
+            "是否额外生成「最小外接矩形（仅物品）」："
+            "生成逻辑与最小外接矩形相同，但无论物品多大都不纳入手；默认开启。"
+        ),
+    )
+    parser.add_argument(
+        "--product_only_rect_label",
+        type=str,
+        default=DEFAULT_PRODUCT_ONLY_RECT_LABEL,
+        help=(
+            "仅物品最小外接矩形的 label 基础名；"
+            "实际写入为「基础名_手持商品数」，如 最小外接矩形（仅物品）_2。"
+        ),
     )
     parser.add_argument(
         "--skip_existing",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="JSON 已有 rect_label 时跳过，防止重复追加；默认启用。",
+        help="JSON 已有对应 rect_label 时跳过该类，防止重复追加；默认启用。",
     )
     parser.add_argument(
         "--require_yolo_match",
@@ -477,11 +502,13 @@ def collect_json_polygons(
     hand_labels: Set[str],
     auxiliary_labels: Set[str],
     rect_label: str,
+    rect_labels: Optional[Set[str]] = None,
 ) -> Tuple[List[List[List[float]]], List[List[List[float]]], List[List[List[float]]]]:
     anchors: List[List[List[float]]] = []
     hands: List[List[List[float]]] = []
     auxiliary: List[List[List[float]]] = []
     explicit_product_labels = bool(product_labels)
+    skip_rect_labels = set(rect_labels) if rect_labels is not None else {rect_label}
 
     for shape in shapes:
         if not isinstance(shape, dict):
@@ -496,7 +523,7 @@ def collect_json_polygons(
         if label in auxiliary_labels:
             auxiliary.append(polygon)
             continue
-        if is_rect_label(label, rect_label):
+        if is_any_rect_label(label, skip_rect_labels):
             continue
         if explicit_product_labels:
             if label_matches(label, product_labels):
@@ -680,6 +707,7 @@ def shape_is_product_anchor(
     hand_labels: Set[str],
     auxiliary_labels: Set[str],
     rect_label: str,
+    rect_labels: Optional[Set[str]] = None,
 ) -> bool:
     """判断 shape 是否应作为手拿商品锚点参与最小外接矩形。"""
     text = str(label).strip()
@@ -687,7 +715,8 @@ def shape_is_product_anchor(
         return False
     if text in hand_labels or text in auxiliary_labels:
         return False
-    if is_rect_label(text, rect_label):
+    skip_rect_labels = set(rect_labels) if rect_labels is not None else {rect_label}
+    if is_any_rect_label(text, skip_rect_labels):
         return False
     if text in ignore_labels:
         return False
@@ -707,6 +736,7 @@ def dedupe_overlapping_product_shapes(
     min_iou: float,
     min_overlap: float,
     max_area_ratio: float,
+    rect_labels: Optional[Set[str]] = None,
 ) -> List[Dict[str, Any]]:
     """
     对商品锚点做重叠去重：高度重叠的多检只保留 score 更高的一个。
@@ -725,6 +755,7 @@ def dedupe_overlapping_product_shapes(
             hand_labels=hand_labels,
             auxiliary_labels=auxiliary_labels,
             rect_label=rect_label,
+            rect_labels=rect_labels,
         ):
             products.append(shape)
         else:
@@ -1203,6 +1234,98 @@ def is_rect_label(label: str, rect_label: str) -> bool:
     return suffix.isdigit()
 
 
+def is_any_rect_label(label: str, rect_labels: Iterable[str]) -> bool:
+    """匹配任一最小外接矩形基础名（含数量后缀）。"""
+    return any(is_rect_label(label, base) for base in rect_labels if str(base).strip())
+
+
+def configured_rect_labels(args: argparse.Namespace) -> Set[str]:
+    """当前运行配置下的全部最小外接矩形基础名。"""
+    labels = {str(args.rect_label).strip()}
+    product_only = str(getattr(args, "product_only_rect_label", "") or "").strip()
+    if product_only:
+        labels.add(product_only)
+    return {item for item in labels if item}
+
+
+def has_existing_rect_label(labels: Iterable[str], rect_label: str) -> bool:
+    return any(is_rect_label(label, rect_label) for label in labels)
+
+
+def make_rect_shapes_from_sized(
+    sized_rects: Sequence[Tuple[List[List[float]], str, int]],
+    rect_label: str,
+    template: Optional[Dict[str, Any]],
+    *,
+    scale_xy: Optional[Tuple[float, float]] = None,
+    clear_score: bool = False,
+) -> List[Dict[str, Any]]:
+    """把 build_sized_min_rectangles 结果转为 LabelMe rectangle shapes。"""
+    sx, sy = scale_xy if scale_xy is not None else (1.0, 1.0)
+    shapes: List[Dict[str, Any]] = []
+    for rectangle, _policy, product_count in sized_rects:
+        points = rectangle
+        if abs(sx - 1.0) > 1e-9 or abs(sy - 1.0) > 1e-9:
+            points = [[float(x) * sx, float(y) * sy] for x, y in rectangle]
+        shape = make_rectangle_shape(
+            points, format_rect_label(rect_label, product_count), template
+        )
+        if clear_score:
+            shape["score"] = None
+        shapes.append(shape)
+    return shapes
+
+
+def build_standard_and_product_only_rects(
+    product_units: Sequence[ProductUnit],
+    hand_polygons: Sequence[Sequence[Sequence[float]]],
+    args: argparse.Namespace,
+    *,
+    width: int,
+    height: int,
+    need_standard: bool,
+    need_product_only: bool,
+) -> Tuple[
+    List[Tuple[List[List[float]], str, int]],
+    List[Tuple[List[List[float]], str, int]],
+]:
+    """
+    按需生成两类最小外接矩形：
+    - 标准：可含与商品相交的手（受 include_nearby_hands 控制）
+    - 仅物品：同一套聚类/限边/拆分逻辑，但永不纳入手
+    """
+    margin = max(0.0, float(args.margin))
+    margin_ratio = max(0.0, float(args.margin_ratio))
+    max_side_ratio = float(args.max_side_ratio)
+    common_kwargs = dict(
+        width=width,
+        height=height,
+        mode=args.rectangle_mode,
+        margin=margin,
+        margin_ratio=margin_ratio,
+        max_side_ratio=max_side_ratio,
+        hand_near_expand_ratio=float(args.hand_near_expand_ratio),
+        hand_max_center_dist_ratio=float(args.hand_max_center_dist_ratio),
+    )
+    standard: List[Tuple[List[List[float]], str, int]] = []
+    product_only: List[Tuple[List[List[float]], str, int]] = []
+    if need_standard:
+        standard = build_sized_min_rectangles(
+            product_units,
+            hand_polygons if args.include_nearby_hands else [],
+            include_contact_hands=bool(args.include_nearby_hands),
+            **common_kwargs,
+        )
+    if need_product_only:
+        product_only = build_sized_min_rectangles(
+            product_units,
+            [],
+            include_contact_hands=False,
+            **common_kwargs,
+        )
+    return standard, product_only
+
+
 # 可视化用英文短名；「最小外接矩形」保留后缀，如 最小外接矩形_2 → min_rect_2
 VIZ_LABEL_ALIASES: Dict[str, str] = {
     "罐装": "can",
@@ -1221,6 +1344,7 @@ VIZ_LABEL_ALIASES: Dict[str, str] = {
     "头部": "head",
     "手机": "phone",
     "售货柜": "cabinet",
+    "最小外接矩形（仅物品）": "min_rect_item",
     "最小外接矩形": "min_rect",
 }
 
@@ -1229,18 +1353,26 @@ def viz_label_text(label: str, aliases: Optional[Dict[str, str]] = None) -> str:
     """
     将 JSON label 转为可视化短名。
     最小外接矩形 / 最小外接矩形_N → min_rect / min_rect_N。
+    最小外接矩形（仅物品）/_N → min_rect_item / min_rect_item_N。
     """
     text = str(label).strip()
     mapping = aliases if aliases is not None else VIZ_LABEL_ALIASES
-    rect_base = "最小外接矩形"
-    rect_alias = mapping.get(rect_base, "min_rect")
-    if text == rect_base or is_rect_label(text, rect_base):
-        return rect_alias + text[len(rect_base) :]
+    # 较长基础名优先，避免「最小外接矩形（仅物品）」被「最小外接矩形」吞掉。
+    rect_bases = [
+        "最小外接矩形（仅物品）",
+        "最小外接矩形",
+    ]
+    for rect_base in rect_bases:
+        rect_alias = mapping.get(rect_base)
+        if rect_alias is None:
+            continue
+        if text == rect_base or is_rect_label(text, rect_base):
+            return rect_alias + text[len(rect_base) :]
     if text in mapping:
         return mapping[text]
     # 前缀匹配商品类（如 瓶装_SKU）；较长键优先，避免「手机」误匹配「手」
     for key, value in sorted(mapping.items(), key=lambda kv: len(kv[0]), reverse=True):
-        if key == rect_base:
+        if key in rect_bases:
             continue
         if text.startswith(key):
             return value
@@ -2166,9 +2298,16 @@ def process_one(
     existing_labels = {
         str(shape.get("label", "")) for shape in shapes if isinstance(shape, dict)
     }
-    if args.skip_existing and any(
-        is_rect_label(label, args.rect_label) for label in existing_labels
-    ):
+    rect_labels = configured_rect_labels(args)
+    product_only_label = str(args.product_only_rect_label).strip()
+    need_standard = not (
+        args.skip_existing and has_existing_rect_label(existing_labels, args.rect_label)
+    )
+    need_product_only = bool(args.add_product_only_rect) and bool(product_only_label) and not (
+        args.skip_existing
+        and has_existing_rect_label(existing_labels, product_only_label)
+    )
+    if not need_standard and not need_product_only:
         return ProcessResult(0, True, 0, 0, 0)
 
     width, height = get_image_size_from_json_or_file(original_data, image_path)
@@ -2181,6 +2320,7 @@ def process_one(
         hand_labels=hand_labels,
         auxiliary_labels=auxiliary_labels,
         rect_label=args.rect_label,
+        rect_labels=rect_labels,
     )
     if not anchors and not hands:
         raise ValueError(
@@ -2225,27 +2365,28 @@ def process_one(
         else:
             raise ValueError("没有得到任何手拿商品范围")
 
-    sized_rects = build_sized_min_rectangles(
+    sized_rects, product_only_rects = build_standard_and_product_only_rects(
         product_units,
-        hands if args.include_nearby_hands else [],
+        hands,
+        args,
         width=width,
         height=height,
-        mode=args.rectangle_mode,
-        margin=max(0.0, float(args.margin)),
-        margin_ratio=max(0.0, float(args.margin_ratio)),
-        max_side_ratio=float(args.max_side_ratio),
-        include_contact_hands=bool(args.include_nearby_hands),
-        hand_near_expand_ratio=float(args.hand_near_expand_ratio),
-        hand_max_center_dist_ratio=float(args.hand_max_center_dist_ratio),
+        need_standard=need_standard,
+        need_product_only=need_product_only,
     )
-    template_ignore = set(ignore_labels) | hand_labels | auxiliary_labels | {args.rect_label}
+    template_ignore = set(ignore_labels) | hand_labels | auxiliary_labels | rect_labels
     template = choose_shape_template(shapes, product_labels, template_ignore)
-    new_shapes = [
-        make_rectangle_shape(
-            rectangle, format_rect_label(args.rect_label, product_count), template
+    new_shapes: List[Dict[str, Any]] = []
+    if need_standard:
+        new_shapes.extend(
+            make_rect_shapes_from_sized(sized_rects, args.rect_label, template)
         )
-        for rectangle, _policy, product_count in sized_rects
-    ]
+    if need_product_only:
+        new_shapes.extend(
+            make_rect_shapes_from_sized(
+                product_only_rects, product_only_label, template
+            )
+        )
 
     if not args.dry_run:
         updated_text = append_shapes_preserving_original_text(original_text, new_shapes)
@@ -2288,6 +2429,10 @@ def process_one_from_yolo(
     has_gt_json = False
     gt_text = ""
     gt_data: Dict[str, Any] = {}
+    need_standard = True
+    product_only_label = str(args.product_only_rect_label).strip()
+    need_product_only = bool(args.add_product_only_rect) and bool(product_only_label)
+    rect_labels = configured_rect_labels(args)
     if json_path.is_file():
         gt_text, gt_data = load_json_text(json_path)
         existing_shapes = gt_data.get("shapes")
@@ -2298,9 +2443,15 @@ def process_one_from_yolo(
                 for shape in existing_shapes
                 if isinstance(shape, dict)
             }
-            if args.skip_existing and any(
-                is_rect_label(label, args.rect_label) for label in existing_labels
-            ):
+            need_standard = not (
+                args.skip_existing
+                and has_existing_rect_label(existing_labels, args.rect_label)
+            )
+            need_product_only = need_product_only and not (
+                args.skip_existing
+                and has_existing_rect_label(existing_labels, product_only_label)
+            )
+            if not need_standard and not need_product_only:
                 return ProcessResult(0, True, 0, 0, 0, labels_written=0)
 
     width, height = get_image_size(image_path)
@@ -2324,7 +2475,17 @@ def process_one_from_yolo(
         )
 
     if not label_shapes:
-        raise ValueError("手部与商品 YOLO 均无检测结果，无法生成最小外接矩形。")
+        # 未检测到手/商品：不算失败。无真值时写空 shapes JSON，便于目录结构完整。
+        if not args.dry_run and not has_gt_json:
+            document = build_labelme_document(image_path, width, height, [])
+            json_path.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(
+                json_path,
+                json.dumps(document, ensure_ascii=False, indent=2) + "\n",
+            )
+        return ProcessResult(
+            0, False, 0, 0, 0, labels_written=0, no_detection=True
+        )
 
     label_shapes = dedupe_overlapping_product_shapes(
         label_shapes,
@@ -2333,6 +2494,7 @@ def process_one_from_yolo(
         hand_labels=hand_labels,
         auxiliary_labels=auxiliary_labels,
         rect_label=args.rect_label,
+        rect_labels=rect_labels,
         min_iou=float(args.min_match_iou),
         min_overlap=float(args.min_match_overlap),
         max_area_ratio=float(args.max_match_area_ratio),
@@ -2355,12 +2517,26 @@ def process_one_from_yolo(
             hand_labels=hand_labels,
             auxiliary_labels=auxiliary_labels,
             rect_label=args.rect_label,
+            rect_labels=rect_labels,
         ):
             anchors.append(poly)
 
     if not anchors and not hands:
-        raise ValueError(
-            "YOLO 去重后既没有商品锚点也没有手部框，无法生成最小外接矩形。"
+        if not args.dry_run and not has_gt_json:
+            document = build_labelme_document(image_path, width, height, label_shapes)
+            json_path.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(
+                json_path,
+                json.dumps(document, ensure_ascii=False, indent=2) + "\n",
+            )
+        return ProcessResult(
+            0,
+            False,
+            0,
+            len(label_shapes),
+            0,
+            labels_written=0 if has_gt_json else len(label_shapes),
+            no_detection=True,
         )
 
     # 保留参数以兼容调用方；几何已用 YOLO→label_shapes，不再二次 process_one。
@@ -2387,25 +2563,39 @@ def process_one_from_yolo(
         if anchors:
             product_units = [[list(anchor)] for anchor in anchors]
         else:
-            raise ValueError("没有得到任何手拿商品范围")
+            # 仅有手、无手持商品：写出已有检测标签，不加最小外接矩形（不算失败）。
+            if not args.dry_run and not has_gt_json:
+                document = build_labelme_document(
+                    image_path, width, height, label_shapes
+                )
+                json_path.parent.mkdir(parents=True, exist_ok=True)
+                atomic_write_text(
+                    json_path,
+                    json.dumps(document, ensure_ascii=False, indent=2) + "\n",
+                )
+            return ProcessResult(
+                0,
+                False,
+                0,
+                len(label_shapes),
+                0,
+                labels_written=0 if has_gt_json else len(label_shapes),
+                no_detection=True,
+            )
 
-    sized_rects = build_sized_min_rectangles(
+    sized_rects, product_only_rects = build_standard_and_product_only_rects(
         product_units,
-        hands if args.include_nearby_hands else [],
+        hands,
+        args,
         width=width,
         height=height,
-        mode=args.rectangle_mode,
-        margin=max(0.0, float(args.margin)),
-        margin_ratio=max(0.0, float(args.margin_ratio)),
-        max_side_ratio=float(args.max_side_ratio),
-        include_contact_hands=bool(args.include_nearby_hands),
-        hand_near_expand_ratio=float(args.hand_near_expand_ratio),
-        hand_max_center_dist_ratio=float(args.hand_max_center_dist_ratio),
+        need_standard=need_standard,
+        need_product_only=need_product_only,
     )
 
     if has_gt_json:
         template_ignore = (
-            set(ignore_labels) | hand_labels | auxiliary_labels | {args.rect_label}
+            set(ignore_labels) | hand_labels | auxiliary_labels | rect_labels
         )
         template = choose_shape_template(
             gt_data.get("shapes") or [], product_labels, template_ignore
@@ -2415,17 +2605,21 @@ def process_one_from_yolo(
         gt_h = int(gt_data.get("imageHeight") or height)
         sx = float(gt_w) / float(width) if width else 1.0
         sy = float(gt_h) / float(height) if height else 1.0
-        new_shapes = []
-        for rectangle, _policy, product_count in sized_rects:
-            if abs(sx - 1.0) > 1e-9 or abs(sy - 1.0) > 1e-9:
-                rectangle = [
-                    [float(x) * sx, float(y) * sy] for x, y in rectangle
-                ]
-            new_shapes.append(
-                make_rectangle_shape(
-                    rectangle,
-                    format_rect_label(args.rect_label, product_count),
+        scale_xy = (sx, sy)
+        new_shapes: List[Dict[str, Any]] = []
+        if need_standard:
+            new_shapes.extend(
+                make_rect_shapes_from_sized(
+                    sized_rects, args.rect_label, template, scale_xy=scale_xy
+                )
+            )
+        if need_product_only:
+            new_shapes.extend(
+                make_rect_shapes_from_sized(
+                    product_only_rects,
+                    product_only_label,
                     template,
+                    scale_xy=scale_xy,
                 )
             )
         if not args.dry_run:
@@ -2442,16 +2636,24 @@ def process_one_from_yolo(
             labels_written=0,
         )
 
-    # 无真值：写出 YOLO 标签 + 最小外接矩形。
+    # 无真值：写出 YOLO 标签 + 最小外接矩形（含可选仅物品框）。
     template = label_shapes[0] if label_shapes else None
-    rect_shapes = [
-        make_rectangle_shape(
-            rectangle, format_rect_label(args.rect_label, product_count), template
+    rect_shapes: List[Dict[str, Any]] = []
+    if need_standard:
+        rect_shapes.extend(
+            make_rect_shapes_from_sized(
+                sized_rects, args.rect_label, template, clear_score=True
+            )
         )
-        for rectangle, _policy, product_count in sized_rects
-    ]
-    for shape in rect_shapes:
-        shape["score"] = None
+    if need_product_only:
+        rect_shapes.extend(
+            make_rect_shapes_from_sized(
+                product_only_rects,
+                product_only_label,
+                template,
+                clear_score=True,
+            )
+        )
     all_shapes = label_shapes + rect_shapes
     if not args.dry_run:
         document = build_labelme_document(image_path, width, height, all_shapes)
@@ -2530,6 +2732,11 @@ def format_progress(
 def validate_args(args: argparse.Namespace) -> None:
     if not args.rect_label.strip():
         raise ValueError("rect_label 不能为空")
+    if args.add_product_only_rect and not str(args.product_only_rect_label).strip():
+        raise ValueError("开启 add_product_only_rect 时 product_only_rect_label 不能为空")
+    product_only = str(args.product_only_rect_label).strip()
+    if product_only and product_only == str(args.rect_label).strip():
+        raise ValueError("product_only_rect_label 不能与 rect_label 相同")
     if args.imgsz <= 0:
         raise ValueError("imgsz 必须大于 0")
     if not 0.0 <= args.conf <= 1.0:
@@ -2574,6 +2781,9 @@ def main() -> None:
     validate_args(args)
     product_labels = parse_string_set(args.product_labels)
     ignore_labels = parse_string_set(args.ignore_labels) | {args.rect_label}
+    product_only_label = str(args.product_only_rect_label).strip()
+    if product_only_label:
+        ignore_labels.add(product_only_label)
     hand_labels = parse_string_set(args.hand_labels)
     auxiliary_labels = parse_string_set(args.auxiliary_labels)
     ignore_labels |= hand_labels | auxiliary_labels
@@ -2622,6 +2832,10 @@ def main() -> None:
         f"hand_max_center_dist_ratio={args.hand_max_center_dist_ratio}"
     )
     print(
+        f"[INFO] add_product_only_rect={args.add_product_only_rect}, "
+        f"product_only_rect_label={args.product_only_rect_label!r}"
+    )
+    print(
         f"[INFO] conf={args.conf}, iou={args.iou}, imgsz={args.imgsz}, "
         f"device={args.device}, rectangle_mode={args.rectangle_mode}, "
         f"margin={args.margin}, margin_ratio={args.margin_ratio}"
@@ -2636,6 +2850,7 @@ def main() -> None:
     selected_yolo_total = 0
     labels_written_total = 0
     skipped_existing = 0
+    no_detection_total = 0
     failures: List[str] = []
     started_at = time.time()
     progress_every = max(1, args.progress_every)
@@ -2676,6 +2891,8 @@ def main() -> None:
             labels_written_total += result.labels_written
             if result.skipped_existing:
                 skipped_existing += 1
+            if result.no_detection:
+                no_detection_total += 1
         except Exception as exc:
             message = (
                 f"image={image_path}, json={json_path}, "
@@ -2695,7 +2912,8 @@ def main() -> None:
                     selected_yolo_total,
                     skipped_existing,
                     len(failures),
-                ),
+                )
+                + f" nodet={no_detection_total}",
                 flush=True,
             )
             write_status_file(
@@ -2709,6 +2927,7 @@ def main() -> None:
                     "selected_yolo_detections": selected_yolo_total,
                     "labels_written": labels_written_total,
                     "skipped_existing": skipped_existing,
+                    "no_detection": no_detection_total,
                     "errors": len(failures),
                     "finished": index == len(pairs),
                     "label_source": args.label_source,
@@ -2736,7 +2955,8 @@ def main() -> None:
         f"完成。配对数={len(pairs)}；新增最小外接矩形={added}；"
         f"纳入 YOLO 商品框={selected_yolo_total}；"
         f"写出检测标签={labels_written_total}；"
-        f"跳过已有={skipped_existing}；失败={len(failures)}"
+        f"跳过已有={skipped_existing}；无检测={no_detection_total}；"
+        f"失败={len(failures)}"
     )
     if args.dry_run:
         print("dry-run：没有写入 JSON。")

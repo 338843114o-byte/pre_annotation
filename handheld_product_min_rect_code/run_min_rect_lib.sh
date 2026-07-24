@@ -17,7 +17,7 @@ CONF="${CONF:-0.25}"
 IOU="${IOU:-0.70}"
 PRODUCT_CLASSES="${PRODUCT_CLASSES:-}"
 PRODUCT_LABELS="${PRODUCT_LABELS:-罐装,瓶装,袋装,盒装,桶装,条装,未定义包装,严重遮挡,过于模糊,信息不足}"
-IGNORE_LABELS="${IGNORE_LABELS:-手,头,售货柜,手机,最小外接矩形}"
+IGNORE_LABELS="${IGNORE_LABELS:-手,头,售货柜,手机,最小外接矩形,最小外接矩形（仅物品）}"
 HAND_LABELS="${HAND_LABELS:-手}"
 AUXILIARY_LABELS="${AUXILIARY_LABELS:-遮挡}"
 IGNORE_YOLO_CLASS_NAMES="${IGNORE_YOLO_CLASS_NAMES:-vending_machine,phone,too_blurry}"
@@ -33,6 +33,8 @@ RECTANGLE_MODE="${RECTANGLE_MODE:-min_area}"
 MARGIN="${MARGIN:-12}"
 MARGIN_RATIO="${MARGIN_RATIO:-0}"
 RECT_LABEL="${RECT_LABEL:-最小外接矩形}"
+ADD_PRODUCT_ONLY_RECT="${ADD_PRODUCT_ONLY_RECT:-1}"
+PRODUCT_ONLY_RECT_LABEL="${PRODUCT_ONLY_RECT_LABEL:-最小外接矩形（仅物品）}"
 
 PROGRESS_EVERY="${PROGRESS_EVERY:-100}"
 RESUME="${RESUME:-0}"
@@ -121,6 +123,7 @@ run_min_rect_job() {
     --margin "$MARGIN"
     --margin_ratio "$MARGIN_RATIO"
     --rect_label "$RECT_LABEL"
+    --product_only_rect_label "$PRODUCT_ONLY_RECT_LABEL"
     --progress_every "$PROGRESS_EVERY"
     --status_file "$STATUS_FILE"
   )
@@ -136,6 +139,11 @@ run_min_rect_job() {
     args+=(--include_nearby_hands)
   else
     args+=(--no-include_nearby_hands)
+  fi
+  if [[ "$ADD_PRODUCT_ONLY_RECT" == "1" ]]; then
+    args+=(--add_product_only_rect)
+  else
+    args+=(--no-add_product_only_rect)
   fi
   if [[ "$RESUME" == "1" ]]; then
     args+=(--resume)
@@ -163,6 +171,7 @@ run_min_rect_job() {
   echo "商品 JSON 标签： ${PRODUCT_LABELS:-自动排除非商品标签}"
   echo "忽略 YOLO 类名： ${IGNORE_YOLO_CLASS_NAMES}"
   echo "矩形形式：       $RECTANGLE_MODE"
+  echo "仅物品外接矩形： $ADD_PRODUCT_ONLY_RECT ($PRODUCT_ONLY_RECT_LABEL)"
   echo "日志：           $LOG_FILE"
   echo "================================================================================"
 
